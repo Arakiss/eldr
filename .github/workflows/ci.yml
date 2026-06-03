@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build · clippy · test (Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (strict)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --all
+
+      - name: Zero-crate invariant
+        run: |
+          pkgs=$(grep -c '^name = ' Cargo.lock)
+          echo "Cargo.lock packages: $pkgs"
+          if [ "$pkgs" -ne 1 ]; then
+            echo "::error::Expected exactly 1 package (eldr); the zero-crate invariant is broken."
+            exit 1
+          fi
