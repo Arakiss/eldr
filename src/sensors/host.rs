@@ -26,6 +26,7 @@ pub struct HostMetrics {
     pub disk: DiskInfo,
     pub net: NetInfo,
     pub top: Vec<ProcInfo>,
+    pub top_mem: Vec<ProcInfo>,
 }
 
 /// Capture the t0 side: per-core ticks, net counters, per-process CPU times.
@@ -59,7 +60,21 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
 
     let top = proc::top(&t0.procs, &procs1, dt, top_n)
         .into_iter()
-        .map(|(pid, cpu, name)| ProcInfo { pid, cpu, name })
+        .map(|(pid, cpu, name)| ProcInfo {
+            pid,
+            cpu,
+            name,
+            mem: 0,
+        })
+        .collect();
+    let top_mem = proc::top_mem(top_n)
+        .into_iter()
+        .map(|(pid, mem, name)| ProcInfo {
+            pid,
+            cpu: 0.0,
+            name,
+            mem,
+        })
         .collect();
 
     HostMetrics {
@@ -78,6 +93,7 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
             tx_rate,
         },
         top,
+        top_mem,
     }
 }
 

@@ -175,6 +175,26 @@ pub fn panel(s: &Snapshot, note: &str) {
         println!("  {d}Top{z}   {tops}", d = st.dim, z = st.reset);
     }
 
+    // Top processes by memory footprint
+    if !s.top_mem.is_empty() {
+        let mems = s
+            .top_mem
+            .iter()
+            .take(4)
+            .map(|p| {
+                format!(
+                    "{} {d}{}{z}",
+                    p.name,
+                    human_bytes(p.mem),
+                    d = st.dim,
+                    z = st.reset
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  {d}Mem{z}   {mems}", d = st.dim, z = st.reset);
+    }
+
     println!();
 }
 

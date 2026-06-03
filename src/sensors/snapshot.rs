@@ -86,6 +86,7 @@ pub struct NetInfo {
 pub struct ProcInfo {
     pub pid: i32,
     pub cpu: f32, // percent
+    pub mem: u64, // memory footprint in bytes (ri_phys_footprint)
     pub name: String,
 }
 
@@ -147,6 +148,7 @@ pub struct Snapshot {
     pub disk: Option<DiskInfo>,
     pub net: Option<NetInfo>,
     pub top_procs: Vec<ProcInfo>,
+    pub top_mem: Vec<ProcInfo>,
 
     pub level: Level,
 }
@@ -209,6 +211,7 @@ impl Snapshot {
         s.disk = Some(hm.disk);
         s.net = Some(hm.net);
         s.top_procs = hm.top;
+        s.top_mem = hm.top_mem;
 
         // point-in-time sensors
         let smc = smc::read();
@@ -342,6 +345,22 @@ impl Snapshot {
             .collect::<Vec<_>>()
             .join(",");
         o.raw("top_procs", &format!("[{procs}]"));
+
+        // top processes by memory footprint
+        let mems = self
+            .top_mem
+            .iter()
+            .map(|p| {
+                format!(
+                    "{{\"pid\":{},\"mem\":{},\"name\":\"{}\"}}",
+                    p.pid,
+                    p.mem,
+                    json_escape(&p.name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        o.raw("top_mem", &format!("[{mems}]"));
 
         o.finish()
     }
@@ -491,6 +510,7 @@ mod tests {
         s.top_procs.push(ProcInfo {
             pid: 1,
             cpu: 3.5,
+            mem: 0,
             name: "a\\b".into(),
         });
         let j = s.to_json();

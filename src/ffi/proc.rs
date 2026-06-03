@@ -13,15 +13,23 @@ unsafe extern "C" {
     fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut c_void) -> c_int;
 }
 
-/// Leading fields of `rusage_info_v2`. `ri_user_time`/`ri_system_time` are cumulative
-/// nanoseconds; `_rest` pads to the full struct so the kernel write fits.
+/// Leading fields of `rusage_info_v2` (from `<sys/resource.h>`). CPU time is
+/// `ri_user_time`/`ri_system_time` (cumulative ns); `ri_phys_footprint` is the memory
+/// footprint Activity Monitor shows. `_rest` pads to the full struct so the kernel
+/// write fits (total 18 u64 after the uuid).
 #[repr(C)]
 #[derive(Default)]
 struct RusageInfoV2 {
     ri_uuid: [u8; 16],
     ri_user_time: u64,
     ri_system_time: u64,
-    _rest: [u64; 16],
+    ri_pkg_idle_wkups: u64,
+    ri_interrupt_wkups: u64,
+    ri_pageins: u64,
+    ri_wired_size: u64,
+    ri_resident_size: u64,
+    ri_phys_footprint: u64,
+    _rest: [u64; 10],
 }
 
 /// All current PIDs.
@@ -75,6 +83,31 @@ pub fn name_of(pid: i32) -> String {
         return format!("pid {pid}");
     }
     String::from_utf8_lossy(&buf[..n as usize]).into_owned()
+}
+
+/// Memory footprint in bytes (`ri_phys_footprint`) for a PID, or `None` if
+/// inaccessible. This is the figure Activity Monitor reports under "Memory".
+fn mem_footprint(pid: i32) -> Option<u64> {
+    let mut ri = RusageInfoV2::default();
+    let rc = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V2, &mut ri as *mut _ as *mut c_void) };
+    if rc != 0 {
+        return None;
+    }
+    Some(ri.ri_phys_footprint)
+}
+
+/// Top `n` processes by memory footprint, as `(pid, bytes, name)`.
+pub fn top_mem(n: usize) -> Vec<(i32, u64, String)> {
+    let mut rows: Vec<(i32, u64)> = list_pids()
+        .into_iter()
+        .filter_map(|pid| mem_footprint(pid).map(|m| (pid, m)))
+        .filter(|&(_, m)| m > 0)
+        .collect();
+    rows.sort_by_key(|&(_, m)| std::cmp::Reverse(m));
+    rows.truncate(n);
+    rows.into_iter()
+        .map(|(pid, m)| (pid, m, name_of(pid)))
+        .collect()
 }
 
 /// Snapshot of every PID's cumulative CPU nanoseconds.

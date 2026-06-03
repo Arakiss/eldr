@@ -131,6 +131,17 @@ fn clean_proc(name: &str) -> String {
     trunc(short, 18)
 }
 
+/// Humanize a process memory footprint as `1.5 GB` / `512 MB` (GiB-based, GB-labelled
+/// to match the Memory gauge and Apple's own "About This Mac").
+fn human_mem(b: u64) -> String {
+    let gib = b as f64 / 1_073_741_824.0;
+    if gib >= 1.0 {
+        format!("{gib:.1} GB")
+    } else {
+        format!("{:.0} MB", b as f64 / 1_048_576.0)
+    }
+}
+
 /// Short uptime like `3d 4h`, `4h 12m`, `7m`.
 fn fmt_uptime(s: u64) -> String {
     let (d, h, m) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
@@ -298,6 +309,16 @@ fn render(s: &Snapshot, cpu_hist: &[f64], rpm_hist: &[f64], ui: &Ui) -> String {
             .join(&format!(" {d}·{z} "));
         line(format!(" {d}Busiest{z}     {tops}"), &mut f);
     }
+    if !s.top_mem.is_empty() {
+        let mems = s
+            .top_mem
+            .iter()
+            .take(4)
+            .map(|p| format!("{} {d}{}{z}", clean_proc(&p.name), human_mem(p.mem)))
+            .collect::<Vec<_>>()
+            .join(&format!(" {d}·{z} "));
+        line(format!(" {d}Mem use{z}     {mems}"), &mut f);
+    }
     blank(&mut f);
 
     line(format!(" {d}{rule}{z}"), &mut f);
@@ -390,7 +411,14 @@ mod tests {
         s.top_procs = vec![ProcInfo {
             pid: 1,
             cpu: 6.0,
+            mem: 0,
             name: "com.apple.Virtualization.VM".into(),
+        }];
+        s.top_mem = vec![ProcInfo {
+            pid: 2,
+            cpu: 0.0,
+            mem: 8 << 30,
+            name: "com.apple.WindowServer".into(),
         }];
 
         let out = render(&s, &[10.0, 20.0, 30.0], &[1000.0, 1700.0], &ui());
