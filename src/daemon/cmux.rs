@@ -106,3 +106,36 @@ pub fn notify_all(title: &str, subtitle: &str, body: &str) {
         notify(&ws, title, subtitle, body);
     }
 }
+
+/// Find the cmux surface hosting a given process pid (for sending an Escape). Parses
+/// `cmux top --all --processes --format tsv`: column 4 == "process", column 5 == pid,
+/// column 6 == the surface ref. Returns only real `surface:`/`:tag:` refs.
+pub fn surface_for_pid(pid: i32) -> Option<String> {
+    let out = Command::new("cmux")
+        .args(["top", "--all", "--processes", "--format", "tsv"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let pid_s = pid.to_string();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() >= 6 && f[3] == "process" && f[4] == pid_s {
+            let surf = f[5].trim();
+            if surf.starts_with("surface:") || surf.contains(":tag:") {
+                return Some(surf.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Send a key to a cmux surface (e.g. `Escape` to pause generation — reversible).
+pub fn send_key(surface: &str, key: &str) -> bool {
+    Command::new("cmux")
+        .args(["send-key", "--surface", surface, key])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}

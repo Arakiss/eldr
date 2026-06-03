@@ -59,6 +59,14 @@ fn cpu_ns(pid: i32) -> Option<u64> {
     Some(ri.ri_user_time + ri.ri_system_time)
 }
 
+/// All PIDs whose short name equals `target` (e.g. `claude`, `codex`).
+pub fn pids_named(target: &str) -> Vec<i32> {
+    list_pids()
+        .into_iter()
+        .filter(|&p| name_of(p) == target)
+        .collect()
+}
+
 /// Short process name for a PID.
 pub fn name_of(pid: i32) -> String {
     let mut buf = [0u8; 256];

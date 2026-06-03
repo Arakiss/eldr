@@ -7,6 +7,7 @@
 
 use crate::config;
 use crate::daemon::cmux;
+use crate::daemon::watchdog::Watchdog;
 use crate::sensors::snapshot::{Level, Snapshot, Thermal};
 use core::ffi::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,18 +46,37 @@ pub fn run(interval_secs: u64) -> i32 {
     let _ = std::fs::write(&pidfile, unsafe { getpid() }.to_string());
 
     let interval_ms = (interval_secs.max(1)) * 1000;
+    let wd = Watchdog::load();
     eprintln!(
-        "eldr guard: every {interval_secs}s -> {}",
-        config::status_path().display()
+        "eldr guard: every {interval_secs}s -> {}  (watchdog: confirm={} interrupt={} checkpoint={} suspend={} dryrun={})",
+        config::status_path().display(),
+        wd.confirm, wd.interrupt, wd.checkpoint, wd.suspend, wd.dryrun,
     );
 
     let mut last = Level::Ok;
+    let mut crit: u32 = 0; // consecutive sustained-critical samples
+    let mut fired = false; // one intervention per critical episode
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
         let _ = snap.write_status();
 
         handle_transitions(&snap, &mut last);
+
+        // Sustained-critical gating for armed interventions.
+        if is_critical(&snap) {
+            crit += 1;
+        } else {
+            crit = 0;
+        }
+        if crit >= wd.confirm && !fired {
+            wd.intervene(&snap, false);
+            fired = true;
+        }
+        if snap.level == Level::Ok && fired {
+            wd.unintervene();
+            fired = false;
+        }
 
         // Sleep the interval in small chunks so a stop signal is responsive.
         let mut slept = 0u64;
@@ -65,6 +85,9 @@ pub fn run(interval_secs: u64) -> i32 {
             slept += 200;
         }
     }
+
+    // On shutdown, resume anything we paused (don't leave a process suspended).
+    wd.unintervene();
 
     // Clean shutdown: clear badges, remove pid file.
     cmux::clear_all();
