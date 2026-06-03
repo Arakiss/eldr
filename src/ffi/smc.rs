@@ -5,6 +5,7 @@
 use crate::ffi::iokit::IOServiceIterator;
 use core::ffi::c_void;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 unsafe extern "C" {
     fn mach_task_self() -> u32;
@@ -184,12 +185,41 @@ impl Smc {
 
     /// CPU/GPU temperature averages from SMC float sensors. CPU = `Tp`/`Te`/`Ts`
     /// (performance/efficiency/super cores), GPU = `Tg`. Returns `(0,0)` if absent.
+    ///
+    /// The set of temperature keys never changes for a given Mac, so it is discovered
+    /// (one full `#KEY` enumeration) only on the first call and cached. Steady-state
+    /// samples then read just the handful of `T*` sensors instead of re-walking every
+    /// SMC key — the bulk of the old per-sample cost.
     pub fn temp_avgs(&mut self) -> (f32, f32) {
+        static KEYS: OnceLock<(Vec<String>, Vec<String>)> = OnceLock::new();
+        if KEYS.get().is_none() {
+            let _ = KEYS.set(self.discover_temp_keys());
+        }
+        let (cpu_keys, gpu_keys) = KEYS.get().unwrap();
+        (self.avg_of(cpu_keys), self.avg_of(gpu_keys))
+    }
+
+    /// Mean of the valid (0–150 °C) readings of the given SMC float keys.
+    fn avg_of(&mut self, keys: &[String]) -> f32 {
+        let (mut sum, mut n) = (0.0f32, 0u32);
+        for k in keys {
+            if let Some(v) = self.read_f32(k)
+                && v > 0.0
+                && v <= 150.0
+            {
+                sum += v;
+                n += 1;
+            }
+        }
+        if n == 0 { 0.0 } else { sum / n as f32 }
+    }
+
+    /// Enumerate every SMC key once and keep the float temperature sensor names,
+    /// split into CPU (`Tp`/`Te`/`Ts`) and GPU (`Tg`).
+    fn discover_temp_keys(&mut self) -> (Vec<String>, Vec<String>) {
         const FLOAT_TYPE: u32 = 1_718_383_648; // FourCC "flt "
-        let names = self.all_keys();
-        let mut cpu = Vec::new();
-        let mut gpu = Vec::new();
-        for name in names {
+        let (mut cpu, mut gpu) = (Vec::new(), Vec::new());
+        for name in self.all_keys() {
             let is_cpu = name.starts_with("Tp") || name.starts_with("Te") || name.starts_with("Ts");
             let is_gpu = name.starts_with("Tg");
             if !is_cpu && !is_gpu {
@@ -201,25 +231,13 @@ impl Smc {
             if ki.data_size != 4 || ki.data_type != FLOAT_TYPE {
                 continue;
             }
-            let Some(v) = self.read_f32(&name) else {
-                continue;
-            };
-            if v > 0.0 && v <= 150.0 {
-                if is_cpu {
-                    cpu.push(v);
-                } else {
-                    gpu.push(v);
-                }
+            if is_cpu {
+                cpu.push(name);
+            } else {
+                gpu.push(name);
             }
         }
-        let avg = |v: &[f32]| {
-            if v.is_empty() {
-                0.0
-            } else {
-                v.iter().sum::<f32>() / v.len() as f32
-            }
-        };
-        (avg(&cpu), avg(&gpu))
+        (cpu, gpu)
     }
 }
 

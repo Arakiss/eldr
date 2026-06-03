@@ -12,7 +12,7 @@ pub use mach::{mem_info, page_size, ram_total, ram_used, swap};
 pub struct HostT0 {
     cpu: Vec<[u64; 4]>,
     net: (u64, u64),
-    procs: HashMap<i32, u64>,
+    procs: HashMap<i32, (u64, u64)>,
     at: std::time::Instant,
 }
 
@@ -34,7 +34,7 @@ pub fn start() -> HostT0 {
     HostT0 {
         cpu: mach::cpu_ticks(),
         net: mach::net_counters(),
-        procs: proc::cpu_times(),
+        procs: proc::sample_all(),
         at: std::time::Instant::now(),
     }
 }
@@ -43,7 +43,7 @@ pub fn start() -> HostT0 {
 pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
     let cpu1 = mach::cpu_ticks();
     let net1 = mach::net_counters();
-    let procs1 = proc::cpu_times();
+    let procs1 = proc::sample_all();
     let dt = t0.at.elapsed().as_secs_f64().max(1e-3);
 
     let per_core = mach::cpu_usage(&t0.cpu, &cpu1);
@@ -67,7 +67,7 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
             mem: 0,
         })
         .collect();
-    let top_mem = proc::top_mem(top_n)
+    let top_mem = proc::top_mem(&procs1, top_n)
         .into_iter()
         .map(|(pid, mem, name)| ProcInfo {
             pid,

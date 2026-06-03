@@ -57,14 +57,27 @@ pub fn list_pids() -> Vec<i32> {
     pids
 }
 
-/// Cumulative CPU nanoseconds (user+system) for a PID, or `None` if inaccessible.
-fn cpu_ns(pid: i32) -> Option<u64> {
+/// `(cumulative CPU ns, memory footprint bytes)` for one PID from a single rusage read.
+fn rusage(pid: i32) -> Option<(u64, u64)> {
     let mut ri = RusageInfoV2::default();
     let rc = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V2, &mut ri as *mut _ as *mut c_void) };
     if rc != 0 {
         return None;
     }
-    Some(ri.ri_user_time + ri.ri_system_time)
+    Some((ri.ri_user_time + ri.ri_system_time, ri.ri_phys_footprint))
+}
+
+/// One rusage read per PID: `pid -> (cpu_ns, mem_bytes)`. CPU% (via two samples) and
+/// memory footprint now come from the SAME call, replacing the old three separate
+/// passes (cpu_times t0, cpu_times t1, top_mem) — a third of the per-sample syscalls.
+pub fn sample_all() -> HashMap<i32, (u64, u64)> {
+    let mut m = HashMap::new();
+    for pid in list_pids() {
+        if let Some(s) = rusage(pid) {
+            m.insert(pid, s);
+        }
+    }
+    m
 }
 
 /// All PIDs whose short name equals `target` (e.g. `claude`, `codex`).
@@ -85,22 +98,11 @@ pub fn name_of(pid: i32) -> String {
     String::from_utf8_lossy(&buf[..n as usize]).into_owned()
 }
 
-/// Memory footprint in bytes (`ri_phys_footprint`) for a PID, or `None` if
-/// inaccessible. This is the figure Activity Monitor reports under "Memory".
-fn mem_footprint(pid: i32) -> Option<u64> {
-    let mut ri = RusageInfoV2::default();
-    let rc = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V2, &mut ri as *mut _ as *mut c_void) };
-    if rc != 0 {
-        return None;
-    }
-    Some(ri.ri_phys_footprint)
-}
-
-/// Top `n` processes by memory footprint, as `(pid, bytes, name)`.
-pub fn top_mem(n: usize) -> Vec<(i32, u64, String)> {
-    let mut rows: Vec<(i32, u64)> = list_pids()
-        .into_iter()
-        .filter_map(|pid| mem_footprint(pid).map(|m| (pid, m)))
+/// Top `n` processes by memory footprint, as `(pid, bytes, name)`, from a sample map.
+pub fn top_mem(samples: &HashMap<i32, (u64, u64)>, n: usize) -> Vec<(i32, u64, String)> {
+    let mut rows: Vec<(i32, u64)> = samples
+        .iter()
+        .map(|(&pid, &(_, mem))| (pid, mem))
         .filter(|&(_, m)| m > 0)
         .collect();
     rows.sort_by_key(|&(_, m)| std::cmp::Reverse(m));
@@ -110,28 +112,17 @@ pub fn top_mem(n: usize) -> Vec<(i32, u64, String)> {
         .collect()
 }
 
-/// Snapshot of every PID's cumulative CPU nanoseconds.
-pub fn cpu_times() -> HashMap<i32, u64> {
-    let mut m = HashMap::new();
-    for pid in list_pids() {
-        if let Some(ns) = cpu_ns(pid) {
-            m.insert(pid, ns);
-        }
-    }
-    m
-}
-
 /// Top `n` processes by CPU% over `dt_secs`, as `(pid, cpu_percent, name)`.
 pub fn top(
-    t0: &HashMap<i32, u64>,
-    t1: &HashMap<i32, u64>,
+    t0: &HashMap<i32, (u64, u64)>,
+    t1: &HashMap<i32, (u64, u64)>,
     dt_secs: f64,
     n: usize,
 ) -> Vec<(i32, f32, String)> {
     let window_ns = (dt_secs * 1e9).max(1.0);
     let mut rows: Vec<(i32, f32)> = Vec::new();
-    for (&pid, &ns1) in t1 {
-        let ns0 = t0.get(&pid).copied().unwrap_or(ns1);
+    for (&pid, &(ns1, _)) in t1 {
+        let ns0 = t0.get(&pid).map(|&(c, _)| c).unwrap_or(ns1);
         let d = ns1.saturating_sub(ns0) as f64;
         let pct = (d / window_ns * 100.0) as f32;
         if pct > 0.05 {
