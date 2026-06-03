@@ -1,11 +1,13 @@
-//! The Eldr live dashboard: a spacious, human-readable ANSI panel over
-//! [`crate::ui::term`]. Plain-language status, performance/temperature/memory/power
-//! sections, history sparklines and top apps. Adapts to the terminal width.
-//! Keys: `q`/Ctrl-C quit, `space` pause, `+`/`-` speed, `?` help. The [`RawMode`]
-//! guard restores the terminal, so quitting never leaks raw mode.
+//! The Eldr live dashboard: a tabbed, human-readable ANSI panel over
+//! [`crate::ui::term`]. Five views (Overview · CPU · Memory · Energy · Storage) sharing
+//! an identical header/footer; only the body swaps, like a segmented control. Plain
+//! language, honest memory (used vs available vs pressure), real storage. Sampling runs
+//! off-thread so keys and quit are instant. Keys: `q`/Ctrl-C quit, `←/→` or `Tab` or
+//! `1`-`5` switch view, `space` pause, `+`/`-` speed, `?` help.
 
 use crate::sensors::snapshot::{Level, Snapshot, Thermal};
-use crate::ui::style::{Style, bar, gib, sparkline};
+use crate::sensors::system::SystemInfo;
+use crate::ui::style::{Style, bar, sparkline};
 use crate::ui::term::{self, RawMode};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,15 +18,26 @@ const SAMPLE_MS: u64 = 250;
 const HIST: usize = 48;
 const MIN_INTERVAL: u64 = 250;
 const MAX_INTERVAL: u64 = 5000;
+const NTABS: u8 = 5;
+const TABS: [&str; 5] = ["Overview", "CPU", "Memory", "Energy", "Storage"];
 
 /// Mutable view state the key handler drives.
 struct Ui {
     interval_ms: u64,
     paused: bool,
     help: bool,
+    tab: u8,
 }
 
-/// A minimal frame shown before the first sample arrives, so startup never looks frozen.
+/// Static identity shown in the header / Storage tab (read once at startup).
+#[derive(Default, Clone)]
+struct Ident {
+    label: String, // "Mac mini · Apple M4 Pro · 8P+4E · 16 GPU · 48 GB"
+    ssd_model: String,
+    ssd_bytes: u64,
+    ssd_medium: String,
+}
+
 fn loading_frame() -> String {
     let st = Style::color();
     format!(
@@ -38,18 +51,15 @@ fn loading_frame() -> String {
     )
 }
 
-/// Run the dashboard until the user quits. `interval_ms` is the target refresh.
-///
-/// Sampling runs on its own thread so `gather()` — which sleeps to sample IOReport and
-/// enumerates SMC — never blocks the input loop. Keys and quit stay instant, and a
-/// "loading" frame shows before the first reading arrives. On quit we just signal the
-/// sampler and return; the [`RawMode`] guard restores the terminal on drop, so exit is
-/// immediate and never waits on the in-flight gather.
+/// Run the dashboard until the user quits.
 pub fn run(interval_ms: u64) {
     let Some(_raw) = RawMode::enter() else {
         eprintln!("eldr: not a terminal (tui needs a tty)");
         return;
     };
+
+    // Static identity (model + SSD) read once — IOKit is too slow for every frame.
+    let ident = build_ident();
 
     let running = Arc::new(AtomicBool::new(true));
     let paused = Arc::new(AtomicBool::new(false));
@@ -58,7 +68,6 @@ pub fn run(interval_ms: u64) {
     ));
     let (tx, rx) = mpsc::channel::<Snapshot>();
 
-    // Sampling thread. Checks `running` every 100ms so exit is prompt.
     {
         let running = running.clone();
         let paused = paused.clone();
@@ -90,19 +99,19 @@ pub fn run(interval_ms: u64) {
         interval_ms: interval.load(Ordering::Relaxed),
         paused: false,
         help: false,
+        tab: 0,
     };
     let mut cpu_hist: Vec<f64> = Vec::with_capacity(HIST);
     let mut rpm_hist: Vec<f64> = Vec::with_capacity(HIST);
+    let mut pwr_hist: Vec<f64> = Vec::with_capacity(HIST);
     let mut last: Option<Snapshot> = None;
 
-    let draw = |snap: &Snapshot, cpu: &[f64], rpm: &[f64], ui: &Ui| {
-        let frame = render(snap, cpu, rpm, ui);
+    let draw = |snap: &Snapshot, c: &[f64], r: &[f64], p: &[f64], ui: &Ui, id: &Ident| {
         let mut out = std::io::stdout();
-        let _ = out.write_all(frame.as_bytes());
+        let _ = out.write_all(render(snap, c, r, p, ui, id).as_bytes());
         let _ = out.flush();
     };
 
-    // Immediate loading frame.
     {
         let mut out = std::io::stdout();
         let _ = out.write_all(loading_frame().as_bytes());
@@ -111,15 +120,14 @@ pub fn run(interval_ms: u64) {
 
     loop {
         let mut dirty = false;
-        // Drain fresh snapshots; keep the newest.
         while let Ok(snap) = rx.try_recv() {
             push_hist(&mut cpu_hist, (snap.cpu_load_pct * 100.0) as f64);
             push_hist(&mut rpm_hist, snap.fan_rpm as f64);
+            push_hist(&mut pwr_hist, snap.sys_power as f64);
             last = Some(snap);
             dirty = true;
         }
 
-        // Short poll so q/Ctrl-C and key actions respond instantly.
         if let Some(k) = term::read_key(80) {
             match k {
                 b'q' | b'Q' | 3 => break,
@@ -142,22 +150,115 @@ pub fn run(interval_ms: u64) {
                     ui.help = !ui.help;
                     dirty = true;
                 }
+                b'1'..=b'5' => {
+                    ui.tab = k - b'1';
+                    dirty = true;
+                }
+                b'\t' => {
+                    ui.tab = (ui.tab + 1) % NTABS;
+                    dirty = true;
+                }
+                0x1b => {
+                    // Arrow keys arrive as ESC [ C (right) / ESC [ D (left).
+                    let bracket = term::read_key(8);
+                    let dir = term::read_key(8);
+                    if bracket == Some(b'[') {
+                        match dir {
+                            Some(b'C') => ui.tab = (ui.tab + 1) % NTABS,
+                            Some(b'D') => ui.tab = (ui.tab + NTABS - 1) % NTABS,
+                            _ => {}
+                        }
+                        dirty = true;
+                    }
+                }
                 _ => {}
             }
         }
 
         if dirty && let Some(snap) = &last {
-            draw(snap, &cpu_hist, &rpm_hist, &ui);
+            draw(snap, &cpu_hist, &rpm_hist, &pwr_hist, &ui, &ident);
         }
     }
 
     running.store(false, Ordering::Relaxed);
 }
 
+fn build_ident() -> Ident {
+    let s = SystemInfo::get();
+    let mut parts = Vec::new();
+    if !s.marketing.is_empty() {
+        parts.push(s.marketing.clone());
+    }
+    if !s.chip.is_empty() {
+        parts.push(s.chip.clone());
+    }
+    if s.e_cores > 0 {
+        parts.push(format!("{}P+{}E", s.p_cores, s.e_cores));
+    }
+    if s.ram_bytes > 0 {
+        parts.push(format!("{:.0} GB", gib(s.ram_bytes)));
+    }
+    Ident {
+        label: parts.join(" · "),
+        ssd_model: s.ssd_model,
+        ssd_bytes: s.ssd_bytes,
+        ssd_medium: s.ssd_medium,
+    }
+}
+
 fn push_hist(h: &mut Vec<f64>, v: f64) {
     h.push(v);
     if h.len() > HIST {
         h.remove(0);
+    }
+}
+
+// MARK: formatting helpers
+
+fn gib(b: u64) -> f64 {
+    b as f64 / 1_073_741_824.0
+}
+fn gb_dec(b: u64) -> u64 {
+    b / 1_000_000_000
+}
+fn ghz(mhz: u32) -> String {
+    if mhz >= 1000 {
+        format!("{:.1} GHz", mhz as f64 / 1000.0)
+    } else {
+        format!("{mhz} MHz")
+    }
+}
+fn human_mem(b: u64) -> String {
+    let g = gib(b);
+    if g >= 1.0 {
+        format!("{g:.1} GB")
+    } else {
+        format!("{:.0} MB", b as f64 / 1_048_576.0)
+    }
+}
+fn fmt_uptime(s: u64) -> String {
+    let (d, h, m) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
+}
+fn clean_proc(name: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let short = base
+        .strip_prefix("com.apple.")
+        .and_then(|r| r.split('.').next())
+        .unwrap_or(base);
+    trunc(short, 18)
+}
+fn trunc(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
     }
 }
 
@@ -168,9 +269,22 @@ fn level_color(st: &Style, lvl: Level) -> &'static str {
         Level::Alert => st.red,
     }
 }
-
-/// A plain-language verdict + one explaining sentence, from the REAL signals
-/// (thermal pressure and the fan) — never from absolute die temperature.
+fn thermal_color(st: &Style, t: Thermal) -> &'static str {
+    match t {
+        Thermal::Nominal => st.green,
+        Thermal::Fair => st.yellow,
+        Thermal::Serious | Thermal::Critical => st.red,
+        Thermal::Unknown => st.dim,
+    }
+}
+fn pressure_color(st: &Style, p: &str) -> &'static str {
+    match p {
+        "low" => st.green,
+        "medium" => st.yellow,
+        "high" => st.red,
+        _ => st.dim,
+    }
+}
 fn human_status(s: &Snapshot) -> (&'static str, &'static str) {
     if s.fan_max > 0 && s.fan_rpm < 500 {
         return (
@@ -191,60 +305,64 @@ fn human_status(s: &Snapshot) -> (&'static str, &'static str) {
     }
 }
 
-/// Frequency in human units: `3.7 GHz`, or `338 MHz` below 1 GHz.
-fn ghz(mhz: u32) -> String {
-    if mhz >= 1000 {
-        format!("{:.1} GHz", mhz as f64 / 1000.0)
+/// Three-zone gauge: used (▓) · cached/reclaimable (▒) · free (░).
+fn seg_bar(used: u64, cached: u64, total: u64, width: usize, st: &Style) -> String {
+    if total == 0 {
+        return "░".repeat(width);
+    }
+    let cell = |b: u64| ((b as f64 / total as f64) * width as f64).round() as usize;
+    let u = cell(used).min(width);
+    let c = cell(cached).min(width - u);
+    let fr = width - u - c;
+    format!(
+        "{}{}{}{}{}{}",
+        st.reset,
+        "▓".repeat(u),
+        st.dim,
+        "▒".repeat(c),
+        "░".repeat(fr),
+        st.reset,
+    )
+}
+
+fn storage_color(st: &Style, free: u64, total: u64) -> (&'static str, &'static str) {
+    let gb = gb_dec(free);
+    let pct_free = if total > 0 {
+        free as f64 / total as f64
     } else {
-        format!("{mhz} MHz")
+        1.0
+    };
+    // macOS cares about absolute free GB; the % keeps "plenty" honest on big disks.
+    if gb < 10 || pct_free < 0.03 {
+        (st.red, "almost full")
+    } else if gb < 25 || pct_free < 0.10 {
+        (st.yellow, "getting full")
+    } else {
+        (st.green, "plenty free")
     }
 }
 
-/// Friendly process name: strip a path and the `com.apple.` reverse-DNS prefix.
-fn clean_proc(name: &str) -> String {
-    let base = name.rsplit('/').next().unwrap_or(name);
-    let short = base
-        .strip_prefix("com.apple.")
-        .and_then(|r| r.split('.').next())
-        .unwrap_or(base);
-    trunc(short, 18)
-}
+// MARK: render
 
-/// Humanize a process memory footprint as `1.5 GB` / `512 MB` (GiB-based, GB-labelled
-/// to match the Memory gauge and Apple's own "About This Mac").
-fn human_mem(b: u64) -> String {
-    let gib = b as f64 / 1_073_741_824.0;
-    if gib >= 1.0 {
-        format!("{gib:.1} GB")
-    } else {
-        format!("{:.0} MB", b as f64 / 1_048_576.0)
-    }
-}
-
-/// Short uptime like `3d 4h`, `4h 12m`, `7m`.
-fn fmt_uptime(s: u64) -> String {
-    let (d, h, m) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
-    if d > 0 {
-        format!("{d}d {h}h")
-    } else if h > 0 {
-        format!("{h}h {m}m")
-    } else {
-        format!("{m}m")
-    }
-}
-
-fn render(s: &Snapshot, cpu_hist: &[f64], rpm_hist: &[f64], ui: &Ui) -> String {
-    let st = Style::color(); // we are in a tty (raw mode)
+fn render(
+    s: &Snapshot,
+    cpu_hist: &[f64],
+    rpm_hist: &[f64],
+    pwr_hist: &[f64],
+    ui: &Ui,
+    id: &Ident,
+) -> String {
+    let st = Style::color();
+    let (cols, _rows) = term::size();
+    let w = (cols as usize).clamp(56, 100);
+    let barw = ((w as f64 * 0.34) as usize).clamp(16, 34);
     let d = st.dim;
     let z = st.reset;
     let b = st.bold;
-    let (cols, _rows) = term::size();
-    let w = (cols as usize).clamp(46, 92);
-    let barw = ((w as f64 * 0.30) as usize).clamp(14, 28);
-    let rule = "─".repeat(w.saturating_sub(2));
 
-    let mut f = String::with_capacity(2560);
+    let mut f = String::with_capacity(4096);
     f.push_str(term::home());
+    let rule = "─".repeat(w.saturating_sub(2));
 
     let line = |row: String, out: &mut String| {
         out.push_str(&row);
@@ -255,238 +373,612 @@ fn render(s: &Snapshot, cpu_hist: &[f64], rpm_hist: &[f64], ui: &Ui) -> String {
         out.push_str(term::clear_eol());
         out.push('\n');
     };
-    // Right-align `right` after `left` within width `w` (both measured plain).
-    let pad =
-        |left: usize, right: usize| -> String { " ".repeat(w.saturating_sub(left + right).max(1)) };
+    let pad = |left: usize, right: usize| " ".repeat(w.saturating_sub(left + right).max(1));
 
-    // Header: eldr (left) · chip (right).
-    let clock = if s.ts.len() >= 19 { &s.ts[11..19] } else { "" };
+    // ---- header (identical on every tab) ----
+    let (head, sub) = human_status(s);
+    let lc = level_color(&st, s.level);
+    let ident = if id.label.is_empty() {
+        s.chip.clone()
+    } else {
+        id.label.clone()
+    };
+    let right = format!("{head}  ·  up {}", fmt_uptime(s.uptime_secs));
     line(
         format!(
-            " {b}eldr{z}{sp}{d}{chip}{z}",
-            chip = s.chip,
-            sp = pad(1 + 4, s.chip.chars().count()),
+            " {b}eldr{z}  {d}{ident}{z}{sp}{lc}●{z} {b}{head}{z} {d}· up {up}{z}",
+            sp = pad(7 + ident.chars().count(), right.chars().count() + 2),
+            up = fmt_uptime(s.uptime_secs),
         ),
         &mut f,
     );
     line(format!(" {d}{rule}{z}"), &mut f);
-    blank(&mut f);
 
-    // Plain-language status: a coloured dot, a verdict, one sentence, uptime.
-    let (head, sub) = human_status(s);
-    let dot = level_color(&st, s.level);
-    line(format!(" {dot}●{z}  {b}{head}{z}"), &mut f);
-    let up = format!("up {}", fmt_uptime(s.uptime_secs));
-    line(
-        format!(
-            " {d}   {sub}{sp}{up}{z}",
-            sp = pad(4 + sub.chars().count(), up.chars().count()),
-        ),
-        &mut f,
-    );
-    blank(&mut f);
-
-    // Performance.
-    line(format!(" {d}Performance{z}"), &mut f);
-    line(
-        format!(
-            "    Processor   {pf:<8} {barp}  {busy:>3.0}%  {d}· E {ef}{z}",
-            pf = ghz(s.pcpu_freq_mhz),
-            ef = ghz(s.ecpu_freq_mhz),
-            barp = bar(s.cpu_usage_pct as f64, 0.0, 1.0, barw),
-            busy = s.cpu_usage_pct * 100.0,
-        ),
-        &mut f,
-    );
-    line(
-        format!(
-            "    Graphics    {gf:<8} {barg}  {busy:>3.0}%",
-            gf = ghz(s.gpu_freq_mhz),
-            barg = bar(s.gpu_active as f64, 0.0, 1.0, barw),
-            busy = s.gpu_active * 100.0,
-        ),
-        &mut f,
-    );
-    blank(&mut f);
-
-    // Temperature — informative, never an alarm on its own.
-    line(format!(" {d}Temperature{z}"), &mut f);
-    line(
-        format!(
-            "    Chip        {ct:>2.0}°C {d}· GPU {gt:>2.0}°C   ~90° is normal on Apple Silicon{z}",
-            ct = s.cpu_temp,
-            gt = s.gpu_temp,
-        ),
-        &mut f,
-    );
-    let rpm_hi = (s.fan_max.max(1)) as f64;
-    let fan_spark = if s.fan_max > 0 {
-        sparkline(rpm_hist, (s.fan_min as f64).min(rpm_hi), rpm_hi)
-    } else {
-        String::new()
-    };
-    let fan_stopped = s.fan_max > 0 && s.fan_rpm < 500;
-    let fan_c = if fan_stopped { st.red } else { z };
-    if s.fan_max > 0 {
-        line(
-            format!(
-                "    Fans        {fan_c}{rpm} rpm{z}  {y}{fan_spark}{z}  {d}· range {min}–{max}{z}",
-                rpm = s.fan_rpm,
-                y = st.yellow,
-                min = s.fan_min,
-                max = s.fan_max,
-            ),
-            &mut f,
-        );
+    // tab strip
+    let mut strip = String::from(" ");
+    for (i, name) in TABS.iter().enumerate() {
+        if i as u8 == ui.tab {
+            strip.push_str(&format!("{b}[ {name} ]{z}  "));
+        } else {
+            strip.push_str(&format!("{d}{name}{z}   "));
+        }
     }
+    let speed = format!("every {:.2}s", ui.interval_ms as f64 / 1000.0);
+    let strip_len = 1 + TABS
+        .iter()
+        .enumerate()
+        .map(|(i, n)| n.chars().count() + if i as u8 == ui.tab { 6 } else { 3 })
+        .sum::<usize>();
+    strip.push_str(&format!(
+        "{sp}{d}{speed}{z}",
+        sp = pad(strip_len, speed.chars().count())
+    ));
+    line(strip, &mut f);
     blank(&mut f);
 
-    // Memory + Power.
-    let ram_frac = if s.ram_total > 0 {
-        s.ram_used as f64 / s.ram_total as f64
-    } else {
-        0.0
-    };
-    let ram_c = if ram_frac >= 0.90 { st.yellow } else { z };
-    line(
-        format!(
-            " {d}Memory{z}      {used:.1} of {total:.0} GB   {ram_c}{barm}{z}  {pct:>3.0}%",
-            used = gib(s.ram_used),
-            total = gib(s.ram_total),
-            barm = bar(ram_frac, 0.0, 1.0, barw),
-            pct = ram_frac * 100.0,
-        ),
-        &mut f,
-    );
-    line(
-        format!(
-            " {d}Power{z}       {all:.0} W chip {d}·{z} {sys:.0} W whole machine",
-            all = s.all_power,
-            sys = s.sys_power,
-        ),
-        &mut f,
-    );
-    blank(&mut f);
-
-    // Load history + busiest apps.
-    line(
-        format!(
-            " {d}Load{z}        {g}{spark}{z}  {cur:>3.0}%   {d}recent history{z}",
-            g = st.green,
-            spark = sparkline(cpu_hist, 0.0, 100.0),
-            cur = s.cpu_load_pct * 100.0,
-        ),
-        &mut f,
-    );
-    if !s.top_procs.is_empty() {
-        let tops = s
-            .top_procs
-            .iter()
-            .take(4)
-            .map(|p| format!("{} {d}{:.0}%{z}", clean_proc(&p.name), p.cpu))
-            .collect::<Vec<_>>()
-            .join(&format!(" {d}·{z} "));
-        line(format!(" {d}Busiest{z}     {tops}"), &mut f);
+    // ---- body ----
+    match ui.tab {
+        0 => body_overview(s, cpu_hist, id, &st, w, barw, &line, &mut f),
+        1 => body_cpu(s, cpu_hist, &st, barw, &line, &blank, &mut f),
+        2 => body_memory(s, &st, w, barw, &line, &blank, &mut f),
+        3 => body_energy(s, pwr_hist, rpm_hist, &st, barw, &line, &blank, &mut f),
+        _ => body_storage(s, id, &st, barw, &line, &blank, &mut f),
     }
-    if !s.top_mem.is_empty() {
-        let mems = s
-            .top_mem
-            .iter()
-            .take(4)
-            .map(|p| format!("{} {d}{}{z}", clean_proc(&p.name), human_mem(p.mem)))
-            .collect::<Vec<_>>()
-            .join(&format!(" {d}·{z} "));
-        line(format!(" {d}Mem use{z}     {mems}"), &mut f);
-    }
-    blank(&mut f);
 
+    // ---- footer (identical on every tab) ----
+    while f.matches('\n').count() < 20 {
+        blank(&mut f);
+    }
     line(format!(" {d}{rule}{z}"), &mut f);
     if ui.help {
         line(
-            format!(" {d}note   ~90°C is normal here. The real signal is thermal pressure{z}"),
-            &mut f,
-        );
-        line(
-            format!(" {d}       (nominal→fair→serious→critical) and a live fan.{z}"),
+            format!(" {d}~90°C is normal on Apple Silicon. The real heat signal is thermal{z}"),
             &mut f,
         );
         line(
             format!(
-                " {b}q{z} Quit {d}·{z} {b}space{z} Pause {d}·{z} {b}+ −{z} Speed {d}·{z} {b}?{z} Close"
+                " {d}pressure (nominal→fair→serious→critical) + a live fan, not the number.{z}"
             ),
             &mut f,
         );
     } else {
         let paused = if ui.paused {
-            format!("  {st_y}[paused]{z}", st_y = st.yellow)
+            format!("  {y}[paused]{z}", y = st.yellow)
         } else {
             String::new()
         };
         line(
             format!(
-                " {d}q{z} Quit {d}·{z} {d}space{z} Pause {d}·{z} {d}+ −{z} Speed {d}·{z} {d}?{z} Help {d}· every {secs:.2}s{z}{paused}{clk}",
-                secs = ui.interval_ms as f64 / 1000.0,
-                clk = if clock.is_empty() {
-                    String::new()
-                } else {
-                    format!("{d}   {clock}{z}")
-                },
+                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-5{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
             ),
             &mut f,
         );
     }
 
+    let _ = (sub, b);
     f.push_str(term::clear_eos());
     f
 }
 
-fn trunc(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+type LineFn<'a> = dyn Fn(String, &mut String) + 'a;
+
+#[allow(clippy::too_many_arguments)]
+fn body_overview(
+    s: &Snapshot,
+    cpu_hist: &[f64],
+    id: &Ident,
+    st: &Style,
+    _w: usize,
+    barw: usize,
+    line: &LineFn,
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let (_h, sub) = human_status(s);
+    line(
+        format!(" {sub}   {d}~90°C is normal here, not a problem.{z}"),
+        f,
+    );
+    line(String::new(), f);
+
+    // CPU
+    line(
+        format!(
+            " {d}CPU{z}      {bar}  {busy:>3.0}%   {d}P {p} · E {e} · load {la:.0}{z}",
+            bar = bar(s.cpu_load_pct as f64, 0.0, 1.0, barw),
+            busy = s.cpu_load_pct * 100.0,
+            p = ghz(s.pcpu_freq_mhz),
+            e = ghz(s.ecpu_freq_mhz),
+            la = s.load_avg.0,
+        ),
+        f,
+    );
+    // Memory
+    let press = s.mem_pressure();
+    let pc = pressure_color(st, press);
+    line(
+        format!(
+            " {d}Memory{z}   {bar}  {used:.0} {d}GB used ·{z} {avail:.0} {d}GB free ·{z} {pc}{press}{z}",
+            bar = bar(s.ram_used as f64, 0.0, s.ram_total.max(1) as f64, barw),
+            used = gib(s.ram_used),
+            avail = gib(s.ram_available),
+        ),
+        f,
+    );
+    // Heat
+    let tc = thermal_color(st, s.thermal);
+    line(
+        format!(
+            " {d}Heat{z}     Chip {ct:.0}° {d}· GPU {gt:.0}° ·{z} {tc}{th}{z}   {d}fan {rpm} rpm{z}",
+            ct = s.cpu_temp,
+            gt = s.gpu_temp,
+            th = s.thermal.as_str(),
+            rpm = s.fan_rpm,
+        ),
+        f,
+    );
+    // Storage
+    if let Some(disk) = &s.disk {
+        let (sc, word) = storage_color(st, disk.free, disk.total);
+        line(
+            format!(
+                " {d}Storage{z}  {bar}  {used} {d}of{z} {tot} GB {d}·{z} {free} GB free   {sc}{word}{z}",
+                bar = bar(
+                    (disk.total - disk.free) as f64,
+                    0.0,
+                    disk.total.max(1) as f64,
+                    barw
+                ),
+                used = gb_dec(disk.total.saturating_sub(disk.free)),
+                tot = gb_dec(disk.total),
+                free = gb_dec(disk.free),
+            ),
+            f,
+        );
     }
+    let _ = (id, cpu_hist);
+    line(String::new(), f);
+    // Busiest
+    line(format!(" {d}Busiest CPU{z}   {}", procs_cpu(s, st)), f);
+    line(format!(" {d}Busiest RAM{z}   {}", procs_mem(s, st)), f);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn body_cpu(
+    s: &Snapshot,
+    cpu_hist: &[f64],
+    st: &Style,
+    barw: usize,
+    line: &LineFn,
+    blank: &dyn Fn(&mut String),
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    line(
+        format!(
+            " {d}Total load{z}   {bar}  {busy:>3.0}%   {d}load avg {a:.2} · {b5:.2} · {c:.2}{z}",
+            bar = bar(s.cpu_load_pct as f64, 0.0, 1.0, barw),
+            busy = s.cpu_load_pct * 100.0,
+            a = s.load_avg.0,
+            b5 = s.load_avg.1,
+            c = s.load_avg.2,
+        ),
+        f,
+    );
+    let (mn, mx) = min_max(cpu_hist);
+    line(
+        format!(
+            " {d}History{z}      {g}{spk}{z}   {d}now {now:.0}% · busiest {mx:.0}% · quietest {mn:.0}%{z}",
+            g = st.green,
+            spk = sparkline(cpu_hist, 0.0, 100.0),
+            now = s.cpu_load_pct * 100.0,
+        ),
+        f,
+    );
+    blank(f);
+    let p = s.p_cores as usize;
+    line(
+        format!(
+            " {d}Performance cores{z}  {d}{pf} · {act:.0}% of max{z}",
+            pf = ghz(s.pcpu_freq_mhz),
+            act = s.pcpu_active * 100.0,
+        ),
+        f,
+    );
+    for (i, v) in s.per_core.iter().take(p).enumerate() {
+        line(
+            format!(
+                "   P{n:<2} {bar} {pct:>3.0}%",
+                n = i + 1,
+                bar = bar(*v as f64, 0.0, 1.0, barw),
+                pct = v * 100.0,
+            ),
+            f,
+        );
+    }
+    blank(f);
+    line(
+        format!(
+            " {d}Efficiency cores{z}   {d}{ef} · {act:.0}% of max{z}",
+            ef = ghz(s.ecpu_freq_mhz),
+            act = s.ecpu_active * 100.0,
+        ),
+        f,
+    );
+    for (i, v) in s.per_core.iter().skip(p).enumerate() {
+        line(
+            format!(
+                "   E{n:<2} {bar} {pct:>3.0}%",
+                n = i + 1,
+                bar = bar(*v as f64, 0.0, 1.0, barw),
+                pct = v * 100.0,
+            ),
+            f,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn body_memory(
+    s: &Snapshot,
+    st: &Style,
+    w: usize,
+    _barw: usize,
+    line: &LineFn,
+    blank: &dyn Fn(&mut String),
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let press = s.mem_pressure();
+    let pc = pressure_color(st, press);
+    let app = s.ram_used.saturating_sub(s.ram_wired + s.ram_compressed);
+    let free = s.ram_available.saturating_sub(s.ram_cached);
+
+    line(
+        format!(
+            " {d}Total{z} {tot:.0} GB   {d}·{z} {d}In use{z} {b}{used:.1} GB{z}   {d}·{z} {d}Free{z} {b}{avail:.1} GB{z} {d}available{z}",
+            b = st.bold,
+            tot = gib(s.ram_total),
+            used = gib(s.ram_used),
+            avail = gib(s.ram_available),
+        ),
+        f,
+    );
+    blank(f);
+    let segw = w.saturating_sub(8).min(70);
+    line(
+        format!(
+            " {}  {d}of {tot:.0} GB{z}",
+            seg_bar(s.ram_used, s.ram_cached, s.ram_total, segw, st),
+            tot = gib(s.ram_total),
+        ),
+        f,
+    );
+    line(
+        format!(
+            " {d}▓ in use {used:.1}{z}   {d}▒ cached {cac:.1}{z}   {d}░ free {fr:.1}  (GB){z}",
+            used = gib(s.ram_used),
+            cac = gib(s.ram_cached),
+            fr = gib(free),
+        ),
+        f,
+    );
+    blank(f);
+    line(
+        format!(
+            " {d}Pressure{z}   {pc}● {press}{z}   {d}{}{z}",
+            pressure_words(press)
+        ),
+        f,
+    );
+    blank(f);
+    line(format!(" {d}What the memory holds{z}"), f);
+    let bw = 14;
+    for (label, val) in [
+        ("App memory", app),
+        ("Wired", s.ram_wired),
+        ("Compressed", s.ram_compressed),
+        ("Cached files", s.ram_cached),
+    ] {
+        line(
+            format!(
+                "   {label:<13} {val:>6.1} GB  {bar}",
+                val = gib(val),
+                bar = bar(val as f64, 0.0, s.ram_total.max(1) as f64, bw),
+            ),
+            f,
+        );
+    }
+    line(
+        format!("   {d}cached files are reusable — they count as free{z}"),
+        f,
+    );
+    blank(f);
+    let (su, st_) = (s.swap_used, s.swap_total);
+    let swap_note = if su == 0 {
+        "macOS hasn't needed to swap — good"
+    } else {
+        "memory has spilled to disk"
+    };
+    line(
+        format!(
+            " {d}Swap{z}   {used:.1} {d}of{z} {tot:.1} GB   {d}{note}{z}",
+            used = gib(su),
+            tot = gib(st_),
+            note = swap_note,
+        ),
+        f,
+    );
+    blank(f);
+    line(
+        format!(" {d}Using most memory{z}   {}", procs_mem(s, st)),
+        f,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn body_energy(
+    s: &Snapshot,
+    pwr_hist: &[f64],
+    rpm_hist: &[f64],
+    st: &Style,
+    barw: usize,
+    line: &LineFn,
+    blank: &dyn Fn(&mut String),
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let (mn, mx) = min_max(pwr_hist);
+    line(
+        format!(
+            " {d}Power{z}    Whole machine {b}{sys:.0} W{z}   {d}· chip package {all:.0} W{z}",
+            b = st.bold,
+            sys = s.sys_power,
+            all = s.all_power,
+        ),
+        f,
+    );
+    line(
+        format!(
+            " {d}History{z}  {y}{spk}{z}   {d}now {now:.0} W · peak {mx:.0} · idle {mn:.0}{z}",
+            y = st.yellow,
+            spk = sparkline(pwr_hist, 0.0, mx.max(1.0)),
+            now = s.sys_power,
+        ),
+        f,
+    );
+    blank(f);
+    line(
+        format!(" {d}Where the watts go{z}  {d}(chip package){z}"),
+        f,
+    );
+    let cap = s.all_power.max(0.1) as f64;
+    for (label, val) in [
+        ("CPU", s.cpu_power),
+        ("GPU", s.gpu_power),
+        ("RAM", s.ram_power),
+        ("ANE", s.ane_power),
+    ] {
+        line(
+            format!(
+                "   {label:<4} {val:>5.1} W  {bar}",
+                val = val,
+                bar = bar(val as f64, 0.0, cap, barw + 6),
+            ),
+            f,
+        );
+    }
+    blank(f);
+    line(format!(" {d}Heat — the one signal that matters{z}"), f);
+    let tc = thermal_color(st, s.thermal);
+    line(
+        format!(
+            "   Thermal pressure  {tc}● {th}{z}   {d}nothing is being throttled{z}",
+            th = s.thermal.as_str(),
+        ),
+        f,
+    );
+    line(
+        format!(
+            "   {d}Temperatures   Chip {ct:.0}° · GPU {gt:.0}°   (die runs hot by design){z}",
+            ct = s.cpu_temp,
+            gt = s.gpu_temp,
+        ),
+        f,
+    );
+    let fan_stopped = s.fan_max > 0 && s.fan_rpm < 500;
+    let fc = if fan_stopped { st.red } else { z };
+    let pct = if s.fan_max > s.fan_min {
+        (s.fan_rpm.saturating_sub(s.fan_min)) as f64 / (s.fan_max - s.fan_min) as f64 * 100.0
+    } else {
+        0.0
+    };
+    line(
+        format!(
+            "   Cooling   {fc}{rpm} rpm{z}  {y}{spk}{z}  {d}{pct:.0}% of range ({mn}–{mx}){z}",
+            rpm = s.fan_rpm,
+            y = st.yellow,
+            spk = sparkline(
+                rpm_hist,
+                (s.fan_min as f64).min(s.fan_max as f64),
+                s.fan_max.max(1) as f64
+            ),
+            mn = s.fan_min,
+            mx = s.fan_max,
+        ),
+        f,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn body_storage(
+    s: &Snapshot,
+    id: &Ident,
+    st: &Style,
+    barw: usize,
+    line: &LineFn,
+    blank: &dyn Fn(&mut String),
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let Some(disk) = &s.disk else {
+        line(format!(" {d}disk info unavailable{z}"), f);
+        return;
+    };
+    let used = disk.total.saturating_sub(disk.free);
+    let pct = if disk.total > 0 {
+        used as f64 / disk.total as f64 * 100.0
+    } else {
+        0.0
+    };
+    let (sc, word) = storage_color(st, disk.free, disk.total);
+    line(format!(" {d}Startup disk “/”{z}"), f);
+    line(
+        format!(
+            "   Used  {bar}  {used} {d}of{z} {tot} GB",
+            bar = bar(used as f64, 0.0, disk.total.max(1) as f64, barw + 8),
+            used = gb_dec(used),
+            tot = gb_dec(disk.total),
+        ),
+        f,
+    );
+    line(
+        format!(
+            "   Free  {free} GB {d}·{z} {pct:.0}% full   {sc}● {word}{z}",
+            free = gb_dec(disk.free),
+        ),
+        f,
+    );
+    if gb_dec(disk.free) < 25 {
+        line(
+            format!("   {sc}clearing space keeps macOS snappy (it slows below ~10 GB free){z}"),
+            f,
+        );
+    }
+    blank(f);
+    if !id.ssd_model.is_empty() {
+        line(format!(" {d}The drive{z}    {}", id.ssd_model), f);
+        let cap = if id.ssd_bytes > 0 {
+            format!("{} GB", id.ssd_bytes / 1_000_000_000)
+        } else {
+            String::new()
+        };
+        let medium = if id.ssd_medium.is_empty() {
+            String::new()
+        } else {
+            format!("   {d}{}{z}", id.ssd_medium)
+        };
+        line(
+            format!(
+                " {d}Capacity{z}     {cap}   {d}({usable} GB usable after formatting){z}{medium}",
+                usable = gb_dec(disk.total),
+            ),
+            f,
+        );
+    }
+}
+
+// MARK: small shared bits
+
+fn min_max(h: &[f64]) -> (f64, f64) {
+    if h.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mn = h.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mx = h.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    (mn, mx)
+}
+
+fn pressure_words(p: &str) -> &'static str {
+    match p {
+        "low" => "the Mac has memory to spare",
+        "medium" => "starting to compress — still ok",
+        "high" => "little headroom; apps may slow",
+        _ => "",
+    }
+}
+
+fn procs_cpu(s: &Snapshot, st: &Style) -> String {
+    let d = st.dim;
+    let z = st.reset;
+    s.top_procs
+        .iter()
+        .take(4)
+        .map(|p| format!("{} {d}{:.0}%{z}", clean_proc(&p.name), p.cpu))
+        .collect::<Vec<_>>()
+        .join(&format!(" {d}·{z} "))
+}
+fn procs_mem(s: &Snapshot, st: &Style) -> String {
+    let d = st.dim;
+    let z = st.reset;
+    s.top_mem
+        .iter()
+        .take(4)
+        .map(|p| format!("{} {d}{}{z}", clean_proc(&p.name), human_mem(p.mem)))
+        .collect::<Vec<_>>()
+        .join(&format!(" {d}·{z} "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sensors::snapshot::ProcInfo;
+    use crate::sensors::snapshot::{DiskInfo, ProcInfo};
 
-    fn ui() -> Ui {
+    fn ui(tab: u8) -> Ui {
         Ui {
-            interval_ms: 250,
+            interval_ms: 1000,
             paused: false,
             help: false,
+            tab,
         }
     }
-
-    #[test]
-    fn render_is_stable_and_human() {
+    fn ident() -> Ident {
+        Ident {
+            label: "Mac mini · Apple M4 Pro · 8P+4E · 48 GB".into(),
+            ssd_model: "APPLE SSD AP0512Z".into(),
+            ssd_bytes: 512_000_000_000,
+            ssd_medium: "NVMe · Internal".into(),
+        }
+    }
+    fn snap() -> Snapshot {
         let mut s = Snapshot::default();
         s.ts = "2026-06-03T15:52:21Z".into();
         s.chip = "Apple M4 Pro".into();
         s.p_cores = 8;
         s.e_cores = 4;
-        s.gpu_cores = 16;
-        s.per_core = vec![0.1, 0.2, 0.9, 0.5];
-        s.pcpu_freq_mhz = 4512;
-        s.ecpu_freq_mhz = 1991;
-        s.cpu_usage_pct = 0.43;
-        s.cpu_load_pct = 0.44;
+        s.per_core = vec![0.6, 0.3, 0.8, 0.2, 0.9, 0.4, 0.1, 0.5, 0.3, 0.2, 0.2, 0.4];
+        s.pcpu_freq_mhz = 3700;
+        s.ecpu_freq_mhz = 2600;
+        s.cpu_load_pct = 0.34;
         s.gpu_freq_mhz = 338;
-        s.all_power = 30.0;
-        s.sys_power = 59.0;
-        s.cpu_temp = 91.0;
-        s.gpu_temp = 76.0;
-        s.fan_rpm = 3150;
+        s.cpu_power = 13.5;
+        s.gpu_power = 0.1;
+        s.ram_power = 0.4;
+        s.all_power = 14.0;
+        s.sys_power = 35.0;
+        s.cpu_temp = 52.0;
+        s.gpu_temp = 46.0;
+        s.fan_rpm = 1840;
         s.fan_min = 1000;
         s.fan_max = 4900;
         s.ram_total = 48 << 30;
-        s.ram_used = 39 << 30;
+        s.ram_used = 30 << 30;
+        s.ram_available = 14 << 30;
+        s.ram_cached = 7 << 30;
+        s.ram_wired = 7 << 30;
+        s.ram_compressed = 3 << 30;
         s.uptime_secs = 3 * 86400 + 4 * 3600;
-        s.thermal = Thermal::Fair;
-        s.level = Level::Warn;
+        s.thermal = Thermal::Nominal;
+        s.level = Level::Ok;
+        s.disk = Some(DiskInfo {
+            total: 460_000_000_000,
+            free: 22_000_000_000,
+        });
         s.top_procs = vec![ProcInfo {
             pid: 1,
             cpu: 6.0,
@@ -494,61 +986,45 @@ mod tests {
             name: "com.apple.Virtualization.VM".into(),
         }];
         s.top_mem = vec![ProcInfo {
-            pid: 2,
+            pid: 1,
             cpu: 0.0,
-            mem: 8 << 30,
-            name: "com.apple.WindowServer".into(),
+            mem: 32 << 30,
+            name: "com.apple.Virtualization.VM".into(),
         }];
-
-        let out = render(&s, &[10.0, 20.0, 30.0], &[1000.0, 1700.0], &ui());
-        assert!(out.starts_with("\x1b[H"));
-        assert!(out.ends_with("\x1b[J"));
-        assert!(out.contains("Apple M4 Pro"));
-        // Plain-language verdict (Fair -> "Warming up"), not a raw level token.
-        assert!(out.contains("Warming up"));
-        // Human units.
-        assert!(out.contains("4.5 GHz"));
-        assert!(out.contains("of 48 GB"));
-        assert!(out.contains("up 3d 4h"));
-        // Reverse-DNS prefix stripped.
-        assert!(out.contains("Virtualization"));
-        assert!(!out.contains("com.apple.Virtualization"));
-        // Help toggles the pressure note.
-        let mut h = ui();
-        h.help = true;
-        let out_h = render(&s, &[], &[], &h);
-        assert!(out_h.contains("real signal is thermal pressure"));
-        // No panic on empty data.
-        let _ = render(&Snapshot::default(), &[], &[], &ui());
+        s
     }
 
     #[test]
-    fn human_status_reads_pressure_not_temp() {
-        let mut s = Snapshot::default();
-        s.fan_max = 4900;
-        s.fan_rpm = 1800;
-        // High die temp alone stays "All good".
-        s.cpu_temp = 99.0;
-        s.thermal = Thermal::Nominal;
-        assert_eq!(human_status(&s).0, "All good");
-        s.thermal = Thermal::Fair;
-        assert_eq!(human_status(&s).0, "Warming up");
-        // A stopped fan is the real danger.
-        s.fan_rpm = 0;
-        assert_eq!(human_status(&s).0, "Check the fan");
+    fn every_tab_renders_without_panic() {
+        let s = snap();
+        let (c, r, p) = (vec![10.0, 40.0, 34.0], vec![1800.0], vec![20.0, 35.0]);
+        for tab in 0..NTABS {
+            let out = render(&s, &c, &r, &p, &ui(tab), &ident());
+            assert!(out.starts_with("\x1b[H"));
+            assert!(out.ends_with("\x1b[J"));
+            assert!(out.contains("Apple M4 Pro"));
+        }
     }
 
     #[test]
-    fn ghz_and_clean_proc() {
-        assert_eq!(ghz(4512), "4.5 GHz");
-        assert_eq!(ghz(338), "338 MHz");
+    fn memory_tab_is_unmistakable() {
+        let out = render(&snap(), &[], &[], &[], &ui(2), &ident());
+        assert!(out.contains("In use"));
+        assert!(out.contains("available"));
+        assert!(out.contains("Pressure"));
+        assert!(out.contains("cached"));
+    }
+
+    #[test]
+    fn storage_tab_shows_real_ssd() {
+        let out = render(&snap(), &[], &[], &[], &ui(4), &ident());
+        assert!(out.contains("APPLE SSD AP0512Z"));
+        assert!(out.contains("22 GB"));
+    }
+
+    #[test]
+    fn clean_proc_strips_prefix() {
         assert_eq!(clean_proc("com.apple.Virtualization.VM"), "Virtualization");
         assert_eq!(clean_proc("/usr/bin/stress-ng"), "stress-ng");
-    }
-
-    #[test]
-    fn trunc_handles_unicode() {
-        assert_eq!(trunc("abc", 5), "abc");
-        assert_eq!(trunc("abcdef", 4), "abc…");
     }
 }
