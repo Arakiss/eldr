@@ -2,7 +2,7 @@
 //! library. The library does the work; `main` only routes and sets exit codes.
 
 use eldr::sensors::snapshot::Snapshot;
-use eldr::ui::pretty;
+use eldr::ui::{pretty, tui};
 
 /// Default IOReport sampling window for one-shot readings (`now`/`status`/`check`).
 const DEFAULT_SAMPLE_MS: u64 = 500;
@@ -42,8 +42,23 @@ fn main() {
     std::process::exit(code);
 }
 
-fn dispatch(cmd: &str, _rest: &[String]) -> i32 {
+/// Extract the value following `--flag` in `args`.
+fn opt<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+}
+
+fn dispatch(cmd: &str, rest: &[String]) -> i32 {
     match cmd {
+        "tui" => {
+            // --interval is in seconds (parity with the prototype).
+            let secs = opt(rest, "--interval").and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.0);
+            let ms = (secs * 1000.0).max(200.0) as u64;
+            tui::run(ms);
+            0
+        }
         "now" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             let _ = snap.write_status();
@@ -67,8 +82,8 @@ fn dispatch(cmd: &str, _rest: &[String]) -> i32 {
             0
         }
         // Wired in later milestones.
-        "tui" | "guard" | "guard-stop" | "guard-install" | "guard-uninstall"
-        | "watchdog-test" | "bench" | "report" | "compare" => {
+        "guard" | "guard-stop" | "guard-install" | "guard-uninstall" | "watchdog-test"
+        | "bench" | "report" | "compare" => {
             eprintln!("eldr: '{cmd}' not implemented yet (in progress)");
             1
         }
