@@ -4,6 +4,9 @@
 use eldr::sensors::snapshot::Snapshot;
 use eldr::ui::pretty;
 
+/// Default IOReport sampling window for one-shot readings (`now`).
+const DEFAULT_SAMPLE_MS: u64 = 500;
+
 const USAGE: &str = "\
 eldr — global hardware monitor + protective watchdog (Apple Silicon, no sudo)
 
@@ -42,7 +45,7 @@ fn main() {
 fn dispatch(cmd: &str, _rest: &[String]) -> i32 {
     match cmd {
         "now" => {
-            let snap = Snapshot::gather_host();
+            let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             pretty::now(&snap);
             0
         }

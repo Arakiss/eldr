@@ -149,13 +149,16 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Gather a host-only snapshot (SoC identity + RAM/swap). Cheap, no sampling
-    /// interval. SoC sensors (power/freq), temps and fan are layered in by
-    /// [`Snapshot::gather`] in later milestones.
+    /// interval. Used as the base for [`Snapshot::gather`].
     pub fn gather_host() -> Self {
-        let mut s = Snapshot::default();
         let soc = soc::SocInfo::get();
-        s.chip = soc.chip_name;
-        s.mac_model = soc.mac_model;
+        Snapshot::from_host(&soc)
+    }
+
+    fn from_host(soc: &soc::SocInfo) -> Self {
+        let mut s = Snapshot::default();
+        s.chip = soc.chip_name.clone();
+        s.mac_model = soc.mac_model.clone();
         s.p_cores = soc.p_cores;
         s.e_cores = soc.e_cores;
         s.gpu_cores = soc.gpu_cores;
@@ -165,6 +168,33 @@ impl Snapshot {
         s.swap_used = su;
         s.swap_total = st;
         s.ts = host::timestamp();
+        s
+    }
+
+    /// Full snapshot: host identity/memory plus one IOReport sample over
+    /// `duration_ms` for SoC power and per-cluster frequencies. Temps, fan,
+    /// per-core load and thermal pressure are layered in by later milestones.
+    pub fn gather(duration_ms: u64) -> Self {
+        let soc = soc::SocInfo::get();
+        let mut s = Snapshot::from_host(&soc);
+
+        if let Some(sampler) = soc::SocSampler::new(soc) {
+            let m = sampler.sample(duration_ms);
+            s.ecpu_freq_mhz = m.ecpu_freq;
+            s.pcpu_freq_mhz = m.pcpu_freq;
+            s.ecpu_active = m.ecpu_active;
+            s.pcpu_active = m.pcpu_active;
+            s.cpu_usage_pct = m.cpu_usage_pct;
+            s.gpu_freq_mhz = m.gpu_freq;
+            s.gpu_active = m.gpu_active;
+            s.cpu_power = m.cpu_power;
+            s.gpu_power = m.gpu_power;
+            s.ane_power = m.ane_power;
+            s.ram_power = m.ram_power;
+            s.all_power = m.all_power;
+            // sys_power (SMC PSTR) is wired in M2; approximate with package power.
+            s.sys_power = m.all_power;
+        }
         s
     }
 }
