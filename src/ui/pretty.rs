@@ -124,20 +124,29 @@ pub fn panel(s: &Snapshot, note: &str) {
         th = s.thermal.as_str(),
     );
 
-    // RAM
+    // RAM — occupied vs available, with plain-language pressure (not a raw "% used").
     let ram_frac = if s.ram_total > 0 {
         s.ram_used as f64 / s.ram_total as f64
     } else {
         0.0
     };
+    let press = s.mem_pressure();
+    let pc = match press {
+        "low" => st.green,
+        "medium" => st.yellow,
+        "high" => st.red,
+        _ => st.dim,
+    };
     println!(
-        "  {d}RAM{z}   {used:>5.1} / {total:.1} GiB  {bar}  {pct:.0}%",
+        "  {d}RAM{z}   {bar}  {used:.0} {d}of{z} {total:.0} GB used {d}·{z} {avail:.0} GB free {d}·{z} {pc}{press}{z} {d}pressure{z}",
         d = st.dim,
         z = st.reset,
+        bar = bar(ram_frac, 0.0, 1.0, 16),
         used = gib(s.ram_used),
         total = gib(s.ram_total),
-        bar = bar(ram_frac, 0.0, 1.0, 18),
-        pct = ram_frac * 100.0,
+        avail = gib(s.ram_available),
+        pc = pc,
+        press = press,
     );
 
     // Disk + net

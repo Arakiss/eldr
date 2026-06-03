@@ -125,9 +125,14 @@ pub struct Snapshot {
     pub sys_power: f32,
     pub all_power: f32,
 
-    // memory (bytes)
+    // memory (bytes) — `used` = app+wired+compressed (truly occupied), `available` =
+    // free + reclaimable cache. Apple's framing, not a misleading raw "% used".
     pub ram_total: u64,
     pub ram_used: u64,
+    pub ram_available: u64,
+    pub ram_cached: u64,
+    pub ram_wired: u64,
+    pub ram_compressed: u64,
     pub swap_total: u64,
     pub swap_used: u64,
 
@@ -162,8 +167,13 @@ impl Snapshot {
         s.p_cores = soc.p_cores;
         s.e_cores = soc.e_cores;
         s.gpu_cores = soc.gpu_cores;
-        s.ram_total = host::ram_total();
-        s.ram_used = host::ram_used();
+        let mem = host::mem_info();
+        s.ram_total = mem.total;
+        s.ram_used = mem.used;
+        s.ram_available = mem.available;
+        s.ram_cached = mem.cached;
+        s.ram_wired = mem.wired;
+        s.ram_compressed = mem.compressed;
         let (su, st) = host::swap();
         s.swap_used = su;
         s.swap_total = st;
@@ -262,6 +272,22 @@ impl Snapshot {
         lvl
     }
 
+    /// Plain-language memory pressure from how much is reclaimable (free + cache),
+    /// not from a misleading raw "% used".
+    pub fn mem_pressure(&self) -> &'static str {
+        if self.ram_total == 0 {
+            return "unknown";
+        }
+        let avail = self.ram_available as f64 / self.ram_total as f64;
+        if avail >= 0.30 {
+            "low"
+        } else if avail >= 0.10 {
+            "medium"
+        } else {
+            "high"
+        }
+    }
+
     /// Write status.json atomically (temp file + rename) into the data dir.
     pub fn write_status(&self) -> std::io::Result<()> {
         let dir = config::ensure_data_dir();
@@ -307,6 +333,11 @@ impl Snapshot {
 
         o.u("ram_total", self.ram_total);
         o.u("ram_used", self.ram_used);
+        o.u("ram_available", self.ram_available);
+        o.u("ram_cached", self.ram_cached);
+        o.u("ram_wired", self.ram_wired);
+        o.u("ram_compressed", self.ram_compressed);
+        o.s("mem_pressure", self.mem_pressure());
         o.u("swap_total", self.swap_total);
         o.u("swap_used", self.swap_used);
 

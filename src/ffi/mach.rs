@@ -195,6 +195,84 @@ pub fn ram_used() -> u64 {
     used_pages * page
 }
 
+/// A human-meaningful memory breakdown, the way Activity Monitor frames it: what is
+/// genuinely occupied (`used` = app + wired + compressed) versus what can be handed
+/// back to apps without swapping (`available` = free + reclaimable cache). A raw
+/// "% used" is misleading on macOS because file cache counts as "used" but is free
+/// for the taking.
+#[derive(Default, Clone, Copy)]
+pub struct MemInfo {
+    pub total: u64,
+    pub used: u64,       // app + wired + compressed (Activity Monitor "Memory Used")
+    pub available: u64,  // free + reclaimable cache
+    pub free: u64,       // truly free right now
+    pub cached: u64,     // file-backed + purgeable + speculative (reclaimable)
+    pub wired: u64,      // can't be paged out
+    pub compressed: u64, // in the memory compressor
+    pub app: u64,        // anonymous app memory
+}
+
+impl MemInfo {
+    /// Plain-language pressure from how much is reclaimable, not from raw "% used".
+    pub fn pressure(&self) -> &'static str {
+        if self.total == 0 {
+            return "unknown";
+        }
+        let avail = self.available as f64 / self.total as f64;
+        if avail >= 0.30 {
+            "low"
+        } else if avail >= 0.10 {
+            "medium"
+        } else {
+            "high"
+        }
+    }
+}
+
+/// Detailed memory accounting from `vm_statistics64`.
+pub fn mem_info() -> MemInfo {
+    let total = ram_total();
+    let mut stats = VmStatistics64::default();
+    let mut count = (size_of::<VmStatistics64>() / size_of::<c_int>()) as u32;
+    let rc = unsafe {
+        host_statistics64(
+            mach_host_self(),
+            HOST_VM_INFO64,
+            &mut stats as *mut _ as *mut c_int,
+            &mut count,
+        )
+    };
+    if rc != 0 {
+        return MemInfo {
+            total,
+            ..Default::default()
+        };
+    }
+    let page = page_size();
+    let p = |n: u32| n as u64 * page;
+    let free = p(stats.free_count);
+    let wired = p(stats.wire_count);
+    let compressed = p(stats.compressor_page_count);
+    // Anonymous app pages minus the purgeable subset (which is reclaimable).
+    let app = p(stats
+        .internal_page_count
+        .saturating_sub(stats.purgeable_count));
+    // File-backed + purgeable + read-ahead: all reclaimable under pressure.
+    let cached = p(stats.external_page_count + stats.purgeable_count + stats.speculative_count);
+    let used = wired + compressed + app;
+    let available = free + cached;
+    MemInfo {
+        total,
+        used,
+        available,
+        free,
+        cached,
+        wired,
+        compressed,
+        app,
+    }
+}
+
 /// Swap usage as `(used, total)` bytes (`vm.swapusage`).
 pub fn swap() -> (u64, u64) {
     let cname = match CString::new("vm.swapusage") {

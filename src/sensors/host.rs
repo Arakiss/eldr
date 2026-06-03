@@ -6,7 +6,7 @@ use crate::ffi::{mach, proc};
 use crate::sensors::snapshot::{DiskInfo, NetInfo, ProcInfo};
 use std::collections::HashMap;
 
-pub use mach::{page_size, ram_total, ram_used, swap};
+pub use mach::{mem_info, page_size, ram_total, ram_used, swap};
 
 /// The "before" half of an interval reading. Pair with [`finish`].
 pub struct HostT0 {
