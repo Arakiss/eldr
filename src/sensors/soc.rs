@@ -304,8 +304,19 @@ mod tests {
         eprintln!("pcpu_freqs={:?}", soc.pcpu_freqs);
         eprintln!("gpu_freqs={:?}", soc.gpu_freqs);
 
+        // Identity holds everywhere, including the virtualized Apple Silicon CI uses.
         assert!(!soc.chip_name.is_empty());
         assert!(soc.p_cores > 0, "expected at least one performance core");
+
+        // GitHub's Apple Silicon runners are VMs (VirtualMac2,1): IOReport does not
+        // expose per-cluster DVFS tables there, so the frequency-table assertions
+        // only apply on real hardware.
+        let virtualized = soc.mac_model.contains("Virtual") || soc.chip_name.contains("Virtual");
+        if virtualized {
+            eprintln!("virtualized host: skipping DVFS frequency-table assertions");
+            return;
+        }
+
         // Frequency tables must be present and ascending (DVFS steps).
         assert!(!soc.ecpu_freqs.is_empty(), "ecpu freq table empty");
         assert!(!soc.pcpu_freqs.is_empty(), "pcpu freq table empty");
