@@ -76,7 +76,10 @@ from — so it appears with the eldr icon under *System Settings → Login Items
 eldr now                     one-shot snapshot
 eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
 eldr status                  panel (live, or the last guard sample)
-eldr tui [--interval N]      live dashboard (q or Ctrl-C to quit)
+eldr tui [--interval N]      tabbed live dashboard — Overview/CPU/Memory/Energy/Storage
+                             (←→/Tab/1-5 switch views, space pause, +/- speed, ? help)
+eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
+eldr sensors                 every SMC sensor — temps, fans, power, current, voltage
 
 eldr guard [--interval N]    background monitor -> status.json, alerts, interventions
 eldr guard-stop              stop a running guard
