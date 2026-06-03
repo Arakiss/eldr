@@ -239,6 +239,108 @@ impl Smc {
         }
         (cpu, gpu)
     }
+
+    /// Read EVERY float SMC sensor, classified by group. Enumerates all keys (one
+    /// `#KEY` walk), gates strictly on `flt `/4-byte to dodge the big-endian integer /
+    /// fixed-point decode footgun, classifies by the key's first letter, and keeps only
+    /// values inside the group's sane range. Backs `eldr sensors`.
+    pub fn read_all_sensors(&mut self) -> Vec<Sensor> {
+        const FLOAT_TYPE: u32 = 1_718_383_648;
+        let mut out = Vec::new();
+        for name in self.all_keys() {
+            let Some(group) = classify(&name) else {
+                continue;
+            };
+            let Some(ki) = self.read_key_info(&name) else {
+                continue;
+            };
+            if ki.data_size != 4 || ki.data_type != FLOAT_TYPE {
+                continue;
+            }
+            let Some(v) = self.read_f32(&name) else {
+                continue;
+            };
+            if v.is_finite() && group.in_range(v) {
+                out.push(Sensor {
+                    key: name,
+                    group,
+                    value: v,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// One decoded SMC sensor reading.
+#[derive(Clone, Debug)]
+pub struct Sensor {
+    pub key: String,
+    pub group: SensorGroup,
+    pub value: f32,
+}
+
+/// What an SMC sensor measures, inferred from its key-name family.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SensorGroup {
+    Temp,
+    Fan,
+    Power,
+    Current,
+    Voltage,
+}
+
+impl SensorGroup {
+    pub fn title(self) -> &'static str {
+        match self {
+            SensorGroup::Temp => "Temperatures",
+            SensorGroup::Fan => "Fans",
+            SensorGroup::Power => "Power",
+            SensorGroup::Current => "Currents",
+            SensorGroup::Voltage => "Voltages",
+        }
+    }
+    pub fn unit(self) -> &'static str {
+        match self {
+            SensorGroup::Temp => "°C",
+            SensorGroup::Fan => "rpm",
+            SensorGroup::Power => "W",
+            SensorGroup::Current => "A",
+            SensorGroup::Voltage => "V",
+        }
+    }
+    /// Membership test: combined with the `flt `/4-byte gate, the range is what keeps a
+    /// float-looking non-sensor key out of a group.
+    fn in_range(self, v: f32) -> bool {
+        match self {
+            SensorGroup::Temp => v > 0.0 && v <= 150.0,
+            SensorGroup::Fan => (0.0..=12000.0).contains(&v),
+            SensorGroup::Power => v > 0.0 && v <= 400.0,
+            SensorGroup::Current => (0.0..=50.0).contains(&v),
+            SensorGroup::Voltage => (0.0..=30.0).contains(&v),
+        }
+    }
+}
+
+/// Classify an SMC key by its first letter (fans also need a digit: `F0Ac`, not `FNum`).
+fn classify(name: &str) -> Option<SensorGroup> {
+    let b = name.as_bytes();
+    match b.first()? {
+        b'T' => Some(SensorGroup::Temp),
+        b'F' if b.get(1).is_some_and(|c| c.is_ascii_digit()) => Some(SensorGroup::Fan),
+        b'P' => Some(SensorGroup::Power),
+        b'I' => Some(SensorGroup::Current),
+        b'V' => Some(SensorGroup::Voltage),
+        _ => None,
+    }
+}
+
+/// Every float SMC sensor on this machine, classified. Empty if SMC is unavailable.
+pub fn all_sensors() -> Vec<Sensor> {
+    match Smc::new() {
+        Some(mut smc) => smc.read_all_sensors(),
+        None => Vec::new(),
+    }
 }
 
 impl Drop for Smc {

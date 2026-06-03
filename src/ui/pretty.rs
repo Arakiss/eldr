@@ -1,5 +1,6 @@
 //! Human-readable text output: the `now`/`status` panel and the terse `check` line.
 
+use crate::ffi::smc;
 use crate::sensors::snapshot::{Level, Snapshot, Thermal};
 use crate::ui::style::{Style, bar, gib, human_bytes, sparkline};
 
@@ -205,6 +206,54 @@ pub fn panel(s: &Snapshot, note: &str) {
     }
 
     println!();
+}
+
+/// `eldr sensors` — every SMC sensor, grouped (temps, fans, power, currents, voltages).
+pub fn sensors_panel() {
+    let st = Style::detect();
+    let sensors = smc::all_sensors();
+    println!();
+    if sensors.is_empty() {
+        println!("  {d}no SMC sensors available{z}", d = st.dim, z = st.reset);
+        return;
+    }
+    for group in [
+        smc::SensorGroup::Temp,
+        smc::SensorGroup::Fan,
+        smc::SensorGroup::Power,
+        smc::SensorGroup::Current,
+        smc::SensorGroup::Voltage,
+    ] {
+        let mut rows: Vec<&smc::Sensor> = sensors.iter().filter(|s| s.group == group).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        rows.sort_by(|a, b| a.key.cmp(&b.key));
+        println!(
+            "  {b}{title}{z}  {d}({n}){z}",
+            b = st.bold,
+            z = st.reset,
+            d = st.dim,
+            title = group.title(),
+            n = rows.len(),
+        );
+        // Two columns keep the long lists compact.
+        let cell = |s: &smc::Sensor| {
+            format!(
+                "{d}{key:<5}{z} {val:>7.1} {unit:<3}",
+                d = st.dim,
+                z = st.reset,
+                key = s.key,
+                val = s.value,
+                unit = group.unit(),
+            )
+        };
+        for pair in rows.chunks(2) {
+            let right = pair.get(1).map(|s| cell(s)).unwrap_or_default();
+            println!("    {}   {right}", cell(pair[0]));
+        }
+        println!();
+    }
 }
 
 /// `eldr check` — one terse line; the caller exits with `s.level.exit_code()`.
