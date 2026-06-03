@@ -4,7 +4,7 @@
 use eldr::sensors::snapshot::Snapshot;
 use eldr::ui::pretty;
 
-/// Default IOReport sampling window for one-shot readings (`now`).
+/// Default IOReport sampling window for one-shot readings (`now`/`status`/`check`).
 const DEFAULT_SAMPLE_MS: u64 = 500;
 
 const USAGE: &str = "\
@@ -46,16 +46,29 @@ fn dispatch(cmd: &str, _rest: &[String]) -> i32 {
     match cmd {
         "now" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
-            pretty::now(&snap);
+            let _ = snap.write_status();
+            pretty::panel(&snap, "(live)");
             0
+        }
+        "status" => {
+            let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
+            let _ = snap.write_status();
+            pretty::panel(&snap, "(live)");
+            0
+        }
+        "check" => {
+            let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
+            let _ = snap.write_status();
+            pretty::check_line(&snap);
+            snap.level.exit_code()
         }
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             0
         }
         // Wired in later milestones.
-        "check" | "status" | "tui" | "guard" | "guard-stop" | "guard-install"
-        | "guard-uninstall" | "watchdog-test" | "bench" | "report" | "compare" => {
+        "tui" | "guard" | "guard-stop" | "guard-install" | "guard-uninstall"
+        | "watchdog-test" | "bench" | "report" | "compare" => {
             eprintln!("eldr: '{cmd}' not implemented yet (in progress)");
             1
         }

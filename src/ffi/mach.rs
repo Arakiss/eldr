@@ -16,8 +16,23 @@ unsafe extern "C" {
         newlen: usize,
     ) -> c_int;
     fn mach_host_self() -> u32;
+    fn mach_task_self() -> u32;
     fn host_statistics64(host: u32, flavor: c_int, info: *mut c_int, count: *mut u32) -> c_int;
+    fn host_processor_info(
+        host: u32,
+        flavor: c_int,
+        out_processor_count: *mut u32,
+        out_processor_info: *mut *mut c_int,
+        out_processor_info_count: *mut u32,
+    ) -> c_int;
+    fn vm_deallocate(target_task: u32, address: usize, size: usize) -> c_int;
+    fn getloadavg(loadavg: *mut f64, nelem: c_int) -> c_int;
+    fn statfs(path: *const c_char, buf: *mut Statfs) -> c_int;
+    fn getifaddrs(ifap: *mut *mut Ifaddrs) -> c_int;
+    fn freeifaddrs(ifa: *mut Ifaddrs);
 }
+
+const PROCESSOR_CPU_LOAD_INFO: c_int = 2;
 
 // mach/host_info.h
 const HOST_VM_INFO64: c_int = 4;
@@ -200,4 +215,226 @@ pub fn swap() -> (u64, u64) {
         return (0, 0);
     }
     (xsw.used, xsw.total)
+}
+
+// MARK: per-core CPU load
+
+/// Per-core cumulative CPU ticks `[user, system, idle, nice]` (CPU_STATE order).
+/// Take two snapshots over an interval and diff them for per-core utilization.
+pub fn cpu_ticks() -> Vec<[u64; 4]> {
+    let mut count: u32 = 0;
+    let mut info: *mut c_int = ptr::null_mut();
+    let mut info_count: u32 = 0;
+    let rc = unsafe {
+        host_processor_info(
+            mach_host_self(),
+            PROCESSOR_CPU_LOAD_INFO,
+            &mut count,
+            &mut info,
+            &mut info_count,
+        )
+    };
+    if rc != 0 || info.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    unsafe {
+        for i in 0..count as usize {
+            let base = i * 4;
+            out.push([
+                *info.add(base) as u32 as u64,
+                *info.add(base + 1) as u32 as u64,
+                *info.add(base + 2) as u32 as u64,
+                *info.add(base + 3) as u32 as u64,
+            ]);
+        }
+        vm_deallocate(
+            mach_task_self(),
+            info as usize,
+            info_count as usize * size_of::<c_int>(),
+        );
+    }
+    out
+}
+
+/// Per-core busy fraction `0..1` from two ticks snapshots. Busy = user+system+nice.
+pub fn cpu_usage(t0: &[[u64; 4]], t1: &[[u64; 4]]) -> Vec<f32> {
+    let n = t0.len().min(t1.len());
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let busy0 = t0[i][0] + t0[i][1] + t0[i][3];
+        let busy1 = t1[i][0] + t1[i][1] + t1[i][3];
+        let total0 = busy0 + t0[i][2];
+        let total1 = busy1 + t1[i][2];
+        let dbusy = busy1.saturating_sub(busy0) as f32;
+        let dtotal = total1.saturating_sub(total0) as f32;
+        out.push(if dtotal > 0.0 { (dbusy / dtotal).clamp(0.0, 1.0) } else { 0.0 });
+    }
+    out
+}
+
+/// 1/5/15-minute load averages.
+pub fn load_avg() -> (f32, f32, f32) {
+    let mut la = [0f64; 3];
+    let n = unsafe { getloadavg(la.as_mut_ptr(), 3) };
+    if n < 3 {
+        return (0.0, 0.0, 0.0);
+    }
+    (la[0] as f32, la[1] as f32, la[2] as f32)
+}
+
+/// Seconds since boot (`kern.boottime`).
+pub fn uptime_secs() -> u64 {
+    // kern.boottime returns a `struct timeval { i64 sec; i32 usec }` (16 bytes padded).
+    #[repr(C)]
+    #[derive(Default)]
+    struct Timeval {
+        sec: i64,
+        usec: i64,
+    }
+    let cname = match CString::new("kern.boottime") {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let mut tv = Timeval::default();
+    let mut size = size_of::<Timeval>();
+    let rc = unsafe {
+        sysctlbyname(
+            cname.as_ptr(),
+            &mut tv as *mut _ as *mut c_void,
+            &mut size,
+            ptr::null(),
+            0,
+        )
+    };
+    if rc != 0 || tv.sec <= 0 {
+        return 0;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    (now - tv.sec).max(0) as u64
+}
+
+// MARK: disk
+
+/// macOS `struct statfs` (arm64, 64-bit inodes). We read only the leading block
+/// counters; the rest must be present so the kernel write fits our buffer.
+#[repr(C)]
+struct Statfs {
+    f_bsize: u32,
+    f_iosize: i32,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [i32; 2],
+    f_owner: u32,
+    f_type: u32,
+    f_flags: u32,
+    f_fssubtype: u32,
+    f_fstypename: [u8; 16],
+    f_mntonname: [u8; 1024],
+    f_mntfromname: [u8; 1024],
+    f_flags_ext: u32,
+    f_reserved: [u32; 7],
+}
+
+/// Filesystem `(total, free)` bytes for `path` (use `/` for the boot volume).
+pub fn disk(path: &str) -> (u64, u64) {
+    let cpath = match CString::new(path) {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+    // Zeroed buffer; only leading fields are read after the call.
+    let mut sf: Statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { statfs(cpath.as_ptr(), &mut sf) };
+    if rc != 0 {
+        return (0, 0);
+    }
+    let bs = sf.f_bsize as u64;
+    (sf.f_blocks * bs, sf.f_bavail * bs)
+}
+
+// MARK: network
+
+#[repr(C)]
+struct Sockaddr {
+    sa_len: u8,
+    sa_family: u8,
+    sa_data: [u8; 14],
+}
+
+#[repr(C)]
+struct Ifaddrs {
+    ifa_next: *mut Ifaddrs,
+    ifa_name: *const c_char,
+    ifa_flags: u32,
+    ifa_addr: *mut Sockaddr,
+    ifa_netmask: *mut Sockaddr,
+    ifa_dstaddr: *mut Sockaddr,
+    ifa_data: *mut c_void,
+}
+
+/// Leading fields of `struct if_data` up to the byte counters (u32, may wrap; we use
+/// them for deltas only).
+#[repr(C)]
+struct IfData {
+    ifi_type: u8,
+    ifi_typelen: u8,
+    ifi_physical: u8,
+    ifi_addrlen: u8,
+    ifi_hdrlen: u8,
+    ifi_recvquota: u8,
+    ifi_xmitquota: u8,
+    ifi_unused1: u8,
+    ifi_mtu: u32,
+    ifi_metric: u32,
+    ifi_baudrate: u32,
+    ifi_ipackets: u32,
+    ifi_ierrors: u32,
+    ifi_opackets: u32,
+    ifi_oerrors: u32,
+    ifi_collisions: u32,
+    ifi_ibytes: u32,
+    ifi_obytes: u32,
+}
+
+const AF_LINK: u8 = 18;
+
+/// Total `(rx_bytes, tx_bytes)` across physical interfaces (excludes `lo0`).
+pub fn net_counters() -> (u64, u64) {
+    let mut head: *mut Ifaddrs = ptr::null_mut();
+    if unsafe { getifaddrs(&mut head) } != 0 || head.is_null() {
+        return (0, 0);
+    }
+    let (mut rx, mut tx) = (0u64, 0u64);
+    let mut cur = head;
+    unsafe {
+        while !cur.is_null() {
+            let ifa = &*cur;
+            if !ifa.ifa_addr.is_null()
+                && (*ifa.ifa_addr).sa_family == AF_LINK
+                && !ifa.ifa_data.is_null()
+            {
+                let name = if ifa.ifa_name.is_null() {
+                    String::new()
+                } else {
+                    std::ffi::CStr::from_ptr(ifa.ifa_name)
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                if name != "lo0" {
+                    let d = &*(ifa.ifa_data as *const IfData);
+                    rx += d.ifi_ibytes as u64;
+                    tx += d.ifi_obytes as u64;
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        freeifaddrs(head);
+    }
+    (rx, tx)
 }

@@ -78,3 +78,38 @@ pub fn default_path() -> std::path::PathBuf {
 pub fn home() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
 }
+
+/// Data directory: `$ELDR_DIR` or `~/.local/share/eldr`. Holds status.json,
+/// alerts.log, actions.log, processes.log.
+pub fn data_dir() -> std::path::PathBuf {
+    if let Ok(x) = std::env::var("ELDR_DIR") {
+        return std::path::PathBuf::from(x);
+    }
+    std::path::PathBuf::from(home())
+        .join(".local")
+        .join("share")
+        .join("eldr")
+}
+
+/// Ensure the data directory exists; returns its path.
+pub fn ensure_data_dir() -> std::path::PathBuf {
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+pub fn status_path() -> std::path::PathBuf {
+    data_dir().join("status.json")
+}
+pub fn alerts_path() -> std::path::PathBuf {
+    data_dir().join("alerts.log")
+}
+pub fn actions_path() -> std::path::PathBuf {
+    data_dir().join("actions.log")
+}
+pub fn processes_path() -> std::path::PathBuf {
+    data_dir().join("processes.log")
+}
+pub fn pid_path() -> std::path::PathBuf {
+    data_dir().join("guard.pid")
+}
