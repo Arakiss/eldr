@@ -8,8 +8,8 @@
 use crate::ffi::cf::{
     CFDataRef, CFDictionaryRef, CFNumberRef, CFRelease, cfdata_bytes, cfdict_get_val, cfnum_i64,
 };
-use crate::ffi::ioreport::{IOReport, residencies, watts};
 use crate::ffi::iokit::{IOObjectRelease, IOServiceIterator, entry_properties};
+use crate::ffi::ioreport::{IOReport, residencies, watts};
 use crate::ffi::mach;
 
 const CPU_FREQ_CORE_SUBG: &str = "CPU Core Performance States";
@@ -95,7 +95,8 @@ fn read_gpu_cores() -> Option<u32> {
     let iter = IOServiceIterator::new("AGXAccelerator")?;
     for (entry, _name) in iter {
         let cores = entry_properties(entry).and_then(|props| {
-            let n = cfdict_get_val(props, "gpu-core-count").and_then(|p| cfnum_i64(p as CFNumberRef));
+            let n =
+                cfdict_get_val(props, "gpu-core-count").and_then(|p| cfnum_i64(p as CFNumberRef));
             unsafe { CFRelease(props) };
             n
         });
@@ -109,10 +110,8 @@ fn read_gpu_cores() -> Option<u32> {
 
 /// M1–M3 and A-series store DVFS frequencies in Hz; M4+ in kHz.
 fn cpu_freq_scale(chip: &str) -> u32 {
-    let hz = chip.contains("M1")
-        || chip.contains("M2")
-        || chip.contains("M3")
-        || chip.contains("A1");
+    let hz =
+        chip.contains("M1") || chip.contains("M2") || chip.contains("M3") || chip.contains("A1");
     if hz { 1_000_000 } else { 1_000 }
 }
 
@@ -311,7 +310,10 @@ mod tests {
         assert!(!soc.ecpu_freqs.is_empty(), "ecpu freq table empty");
         assert!(!soc.pcpu_freqs.is_empty(), "pcpu freq table empty");
         for table in [&soc.ecpu_freqs, &soc.pcpu_freqs] {
-            assert!(table.windows(2).all(|w| w[0] <= w[1]), "freqs not ascending");
+            assert!(
+                table.windows(2).all(|w| w[0] <= w[1]),
+                "freqs not ascending"
+            );
             let max = *table.last().unwrap();
             assert!((800..=6000).contains(&max), "implausible max freq {max}");
         }

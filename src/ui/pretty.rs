@@ -39,7 +39,12 @@ pub fn panel(s: &Snapshot, note: &str) {
 
     println!();
     let gpu = if s.gpu_cores > 0 {
-        format!(" {d}·{z} {g} GPU", d = st.dim, z = st.reset, g = s.gpu_cores)
+        format!(
+            " {d}·{z} {g} GPU",
+            d = st.dim,
+            z = st.reset,
+            g = s.gpu_cores
+        )
     } else {
         String::new()
     };

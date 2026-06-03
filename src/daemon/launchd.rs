@@ -90,7 +90,10 @@ pub fn install() -> i32 {
     }
 
     println!("eldr guard installed as LaunchAgent ({LABEL}) — starts at login, restarts on crash.");
-    println!("  stop for real: eldr guard-uninstall   ·   log: {}", log.display());
+    println!(
+        "  stop for real: eldr guard-uninstall   ·   log: {}",
+        log.display()
+    );
     0
 }
 

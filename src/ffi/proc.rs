@@ -107,5 +107,7 @@ pub fn top(
     }
     rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     rows.truncate(n);
-    rows.into_iter().map(|(pid, pct)| (pid, pct, name_of(pid))).collect()
+    rows.into_iter()
+        .map(|(pid, pct)| (pid, pct, name_of(pid)))
+        .collect()
 }

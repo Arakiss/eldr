@@ -92,7 +92,11 @@ impl Drop for RawMode {
 /// Wait up to `timeout_ms` for a key on stdin. Returns the byte, or `None` on
 /// timeout. `Some(0x03)` is Ctrl-C.
 pub fn read_key(timeout_ms: i32) -> Option<u8> {
-    let mut pfd = Pollfd { fd: 0, events: POLLIN, revents: 0 };
+    let mut pfd = Pollfd {
+        fd: 0,
+        events: POLLIN,
+        revents: 0,
+    };
     let rc = unsafe { poll(&mut pfd, 1, timeout_ms) };
     if rc <= 0 || (pfd.revents & POLLIN) == 0 {
         return None;

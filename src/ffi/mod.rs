@@ -11,8 +11,8 @@
 
 pub mod cf;
 pub mod iohid;
-pub mod ioreport;
 pub mod iokit;
+pub mod ioreport;
 pub mod mach;
 pub mod proc;
 pub mod smc;

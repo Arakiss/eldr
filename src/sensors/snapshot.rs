@@ -232,7 +232,10 @@ impl Snapshot {
         };
 
         // sys_power via SMC PSTR, falling back to package power.
-        s.sys_power = smc.sys_power.map(|p| p.max(s.all_power)).unwrap_or(s.all_power);
+        s.sys_power = smc
+            .sys_power
+            .map(|p| p.max(s.all_power))
+            .unwrap_or(s.all_power);
 
         s.level = s.compute_level();
         s
@@ -284,7 +287,10 @@ impl Snapshot {
         o.u("ecpu_freq_mhz", self.ecpu_freq_mhz as u64);
         o.f("pcpu_active", self.pcpu_active);
         o.f("ecpu_active", self.ecpu_active);
-        o.arr_f("load_avg", &[self.load_avg.0, self.load_avg.1, self.load_avg.2]);
+        o.arr_f(
+            "load_avg",
+            &[self.load_avg.0, self.load_avg.1, self.load_avg.2],
+        );
 
         o.u("gpu_freq_mhz", self.gpu_freq_mhz as u64);
         o.f("gpu_active", self.gpu_active);
@@ -350,7 +356,10 @@ struct JsonObj {
 
 impl JsonObj {
     fn new() -> Self {
-        JsonObj { buf: String::from("{"), first: true }
+        JsonObj {
+            buf: String::from("{"),
+            first: true,
+        }
     }
     fn sep(&mut self) {
         if self.first {
@@ -411,7 +420,11 @@ fn fmt_f(v: f32) -> String {
     }
     let s = format!("{:.3}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() || s == "-" { "0".into() } else { s.to_string() }
+    if s.is_empty() || s == "-" {
+        "0".into()
+    } else {
+        s.to_string()
+    }
 }
 
 fn json_escape(s: &str) -> String {
@@ -475,7 +488,11 @@ mod tests {
     fn json_is_wellformed_and_escapes() {
         let mut s = snap();
         s.chip = "Apple \"M4\" Pro".into();
-        s.top_procs.push(ProcInfo { pid: 1, cpu: 3.5, name: "a\\b".into() });
+        s.top_procs.push(ProcInfo {
+            pid: 1,
+            cpu: 3.5,
+            name: "a\\b".into(),
+        });
         let j = s.to_json();
         assert!(j.starts_with('{') && j.ends_with('}'));
         assert_eq!(j.matches('{').count(), j.matches('}').count());

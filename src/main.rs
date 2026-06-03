@@ -55,7 +55,9 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
     match cmd {
         "tui" => {
             // --interval is in seconds (parity with the prototype).
-            let secs = opt(rest, "--interval").and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.0);
+            let secs = opt(rest, "--interval")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(1.0);
             let ms = (secs * 1000.0).max(200.0) as u64;
             tui::run(ms);
             0
@@ -83,7 +85,9 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             0
         }
         "guard" => {
-            let secs = opt(rest, "--interval").and_then(|v| v.parse::<u64>().ok()).unwrap_or(30);
+            let secs = opt(rest, "--interval")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
             guard::run(secs)
         }
         "guard-stop" => {
@@ -102,8 +106,12 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
                 eprintln!("usage: eldr bench <label> [--dur N --interval N --cmd \"...\"]");
                 return 2;
             };
-            let dur = opt(rest, "--dur").and_then(|v| v.parse().ok()).unwrap_or(1200);
-            let interval = opt(rest, "--interval").and_then(|v| v.parse().ok()).unwrap_or(15);
+            let dur = opt(rest, "--dur")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1200);
+            let interval = opt(rest, "--interval")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(15);
             let load = opt(rest, "--cmd");
             bench::bench(label, dur, interval, load)
         }
@@ -112,7 +120,9 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
                 eprintln!("usage: eldr report <label> [--tail N]");
                 return 2;
             };
-            let tail = opt(rest, "--tail").and_then(|v| v.parse().ok()).unwrap_or(300);
+            let tail = opt(rest, "--tail")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300);
             bench::report(label, tail)
         }
         "compare" => {
@@ -121,7 +131,9 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
                 eprintln!("usage: eldr compare <a> <b> [--tail N]");
                 return 2;
             }
-            let tail = opt(rest, "--tail").and_then(|v| v.parse().ok()).unwrap_or(300);
+            let tail = opt(rest, "--tail")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300);
             bench::compare(labels[0], labels[1], tail)
         }
         other => {

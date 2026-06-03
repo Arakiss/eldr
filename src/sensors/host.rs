@@ -67,8 +67,16 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
         cpu_total,
         load: mach::load_avg(),
         uptime_secs: mach::uptime_secs(),
-        disk: DiskInfo { total: dtotal, free: dfree },
-        net: NetInfo { rx_bytes: net1.0, tx_bytes: net1.1, rx_rate, tx_rate },
+        disk: DiskInfo {
+            total: dtotal,
+            free: dfree,
+        },
+        net: NetInfo {
+            rx_bytes: net1.0,
+            tx_bytes: net1.1,
+            rx_rate,
+            tx_rate,
+        },
         top,
     }
 }

@@ -68,8 +68,11 @@ unsafe extern "C" {
         encoding: u32,
     ) -> u8;
 
-    pub fn CFNumberCreate(alloc: CFAllocatorRef, the_type: CFIndex, value_ptr: *const c_void)
-    -> CFNumberRef;
+    pub fn CFNumberCreate(
+        alloc: CFAllocatorRef,
+        the_type: CFIndex,
+        value_ptr: *const c_void,
+    ) -> CFNumberRef;
     pub fn CFNumberGetValue(number: CFNumberRef, the_type: CFIndex, value_ptr: *mut c_void) -> u8;
 
     pub fn CFDictionaryCreate(
@@ -158,7 +161,11 @@ pub fn cfnum_i64(number: CFNumberRef) -> Option<i64> {
     }
     let mut v: i64 = 0;
     let ok = unsafe {
-        CFNumberGetValue(number, K_CF_NUMBER_SINT64_TYPE, &mut v as *mut i64 as *mut c_void)
+        CFNumberGetValue(
+            number,
+            K_CF_NUMBER_SINT64_TYPE,
+            &mut v as *mut i64 as *mut c_void,
+        )
     };
     if ok == 0 { None } else { Some(v) }
 }

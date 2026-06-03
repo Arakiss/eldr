@@ -28,7 +28,10 @@ fn sigstop_is_reversed_by_unintervene() {
     // SAFETY: test-only env override read by eldr::config.
     unsafe { std::env::set_var("ELDR_DIR", dir) };
 
-    let mut child = Command::new("sleep").arg("60").spawn().expect("spawn sleep");
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn sleep");
     let pid = child.id() as i32;
     std::thread::sleep(std::time::Duration::from_millis(150));
     assert!(!proc_state(pid).contains('T'), "child should start running");
@@ -36,14 +39,20 @@ fn sigstop_is_reversed_by_unintervene() {
     // Suspend (what `do_suspend` does), record it (what `record_suspended` does).
     assert_eq!(unsafe { kill(pid, SIGSTOP) }, 0);
     std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(proc_state(pid).contains('T'), "child must be STOPPED after SIGSTOP");
+    assert!(
+        proc_state(pid).contains('T'),
+        "child must be STOPPED after SIGSTOP"
+    );
     std::fs::write(format!("{dir}/suspended.pids"), format!("{pid}\n")).unwrap();
 
     // Auto-undo: unintervene must SIGCONT it and clear the ledger.
     Watchdog::default().unintervene();
     std::thread::sleep(std::time::Duration::from_millis(200));
     let st = proc_state(pid);
-    assert!(!st.contains('T'), "child must be RESUMED after unintervene, got {st:?}");
+    assert!(
+        !st.contains('T'),
+        "child must be RESUMED after unintervene, got {st:?}"
+    );
     assert!(
         !std::path::Path::new(&format!("{dir}/suspended.pids")).exists(),
         "suspended.pids must be cleared"
@@ -74,26 +83,49 @@ fn git_stash_create_is_nondestructive_and_recoverable() {
 
     // Make the tree dirty (an agent's uncommitted work).
     std::fs::write(format!("{dir}/f.txt"), "AGENT WORK IN PROGRESS\n").unwrap();
-    assert!(!git(&["status", "--porcelain"]).stdout.is_empty(), "tree should be dirty");
+    assert!(
+        !git(&["status", "--porcelain"]).stdout.is_empty(),
+        "tree should be dirty"
+    );
 
     // The exact watchdog flow: stash create -> store.
-    let sha = String::from_utf8_lossy(&git(&["stash", "create"]).stdout).trim().to_string();
-    assert!(!sha.is_empty(), "stash create should yield a sha for a dirty tree");
+    let sha = String::from_utf8_lossy(&git(&["stash", "create"]).stdout)
+        .trim()
+        .to_string();
+    assert!(
+        !sha.is_empty(),
+        "stash create should yield a sha for a dirty tree"
+    );
     git(&["stash", "store", "-m", "eldr test", &sha]);
 
     // Non-destructive: the working tree is UNCHANGED (the dirty content remains).
     let content = std::fs::read_to_string(format!("{dir}/f.txt")).unwrap();
-    assert_eq!(content, "AGENT WORK IN PROGRESS\n", "stash create must not touch the tree");
-    assert!(!git(&["status", "--porcelain"]).stdout.is_empty(), "tree must still be dirty");
+    assert_eq!(
+        content, "AGENT WORK IN PROGRESS\n",
+        "stash create must not touch the tree"
+    );
+    assert!(
+        !git(&["status", "--porcelain"]).stdout.is_empty(),
+        "tree must still be dirty"
+    );
 
     // Recoverable: the snapshot is recorded in the stash list...
     let list = String::from_utf8_lossy(&git(&["stash", "list"]).stdout).into_owned();
-    assert!(list.contains("eldr test"), "stash should be recorded, got: {list}");
+    assert!(
+        list.contains("eldr test"),
+        "stash should be recorded, got: {list}"
+    );
 
     // ...and after reverting the tree, applying the snapshot restores the agent work.
     git(&["checkout", "--", "f.txt"]);
-    assert_eq!(std::fs::read_to_string(format!("{dir}/f.txt")).unwrap(), "original\n");
-    assert!(git(&["stash", "apply", &sha]).status.success(), "stash must apply onto clean tree");
+    assert_eq!(
+        std::fs::read_to_string(format!("{dir}/f.txt")).unwrap(),
+        "original\n"
+    );
+    assert!(
+        git(&["stash", "apply", &sha]).status.success(),
+        "stash must apply onto clean tree"
+    );
     assert_eq!(
         std::fs::read_to_string(format!("{dir}/f.txt")).unwrap(),
         "AGENT WORK IN PROGRESS\n",

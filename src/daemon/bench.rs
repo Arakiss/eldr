@@ -29,24 +29,43 @@ fn spawn_load(cmd: Option<&str>) -> (String, Vec<Child>) {
     let null = || (Stdio::null(), Stdio::null());
     if let Some(c) = cmd {
         let (o, e) = null();
-        let child = Command::new("bash").arg("-c").arg(c).stdout(o).stderr(e).spawn();
+        let child = Command::new("bash")
+            .arg("-c")
+            .arg(c)
+            .stdout(o)
+            .stderr(e)
+            .spawn();
         return (format!("custom load: {c}"), child.into_iter().collect());
     }
     let n = ncpu();
     // Prefer stress-ng (matrixprod is a stable, heat-dense workload).
-    if Command::new("stress-ng").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+    if Command::new("stress-ng")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
         let (o, e) = null();
         let child = Command::new("stress-ng")
             .args(["--cpu", &n.to_string(), "--cpu-method", "matrixprod"])
             .stdout(o)
             .stderr(e)
             .spawn();
-        return (format!("stress-ng matrixprod x{n}"), child.into_iter().collect());
+        return (
+            format!("stress-ng matrixprod x{n}"),
+            child.into_iter().collect(),
+        );
     }
     // Fallback: N spinning `yes` processes (weaker, uneven, but dependency-free).
     let mut kids = Vec::new();
     for _ in 0..n {
-        if let Ok(c) = Command::new("yes").stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        if let Ok(c) = Command::new("yes")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             kids.push(c);
         }
     }
@@ -81,7 +100,10 @@ pub fn bench(label: &str, dur_s: u64, interval_s: u64, cmd: Option<&str>) -> i32
             && let Some(first) = kids.first_mut()
             && matches!(first.try_wait(), Ok(Some(_)))
         {
-            println!("  (the load finished on its own at {}s)", start.elapsed().as_secs());
+            println!(
+                "  (the load finished on its own at {}s)",
+                start.elapsed().as_secs()
+            );
             break;
         }
         let s = Snapshot::gather(SAMPLE_MS);
@@ -160,7 +182,11 @@ fn summarize(label: &str, tail_s: u64) -> Option<Steady> {
     if rows.is_empty() {
         return None;
     }
-    let max_elapsed: u64 = rows.iter().filter_map(|r| r[1].parse().ok()).max().unwrap_or(0);
+    let max_elapsed: u64 = rows
+        .iter()
+        .filter_map(|r| r[1].parse().ok())
+        .max()
+        .unwrap_or(0);
     let threshold = max_elapsed.saturating_sub(tail_s);
 
     let mut cpu = Vec::new();
@@ -184,9 +210,19 @@ fn summarize(label: &str, tail_s: u64) -> Option<Steady> {
     }
     let cpu_avg = cpu.iter().sum::<f32>() / cpu.len() as f32;
     let cpu_max = cpu.iter().cloned().fold(0.0_f32, f32::max);
-    let fan_avg = if fan.is_empty() { 0.0 } else { fan.iter().sum::<f32>() / fan.len() as f32 };
+    let fan_avg = if fan.is_empty() {
+        0.0
+    } else {
+        fan.iter().sum::<f32>() / fan.len() as f32
+    };
     let worst_thermal = ["nominal", "fair", "serious", "critical"][worst as usize].to_string();
-    Some(Steady { cpu_avg, cpu_max, fan_avg, worst_thermal, n: cpu.len() })
+    Some(Steady {
+        cpu_avg,
+        cpu_max,
+        fan_avg,
+        worst_thermal,
+        n: cpu.len(),
+    })
 }
 
 /// `eldr report <label>` — steady-state summary.
@@ -217,8 +253,14 @@ pub fn compare(a: &str, b: &str, tail_s: u64) -> i32 {
         return 1;
     };
     println!("Steady state (last {tail_s}s) — identical load");
-    println!("  {a:<10} CPU {:>5.1}°C   fan {:>5.0} RPM   worst thermal {}", sa.cpu_avg, sa.fan_avg, sa.worst_thermal);
-    println!("  {b:<10} CPU {:>5.1}°C   fan {:>5.0} RPM   worst thermal {}", sb.cpu_avg, sb.fan_avg, sb.worst_thermal);
+    println!(
+        "  {a:<10} CPU {:>5.1}°C   fan {:>5.0} RPM   worst thermal {}",
+        sa.cpu_avg, sa.fan_avg, sa.worst_thermal
+    );
+    println!(
+        "  {b:<10} CPU {:>5.1}°C   fan {:>5.0} RPM   worst thermal {}",
+        sb.cpu_avg, sb.fan_avg, sb.worst_thermal
+    );
     let dt = sb.cpu_avg - sa.cpu_avg;
     let dr = sb.fan_avg - sa.fan_avg;
     println!("  delta      CPU {dt:>+5.1}°C   fan {dr:>+5.0} RPM");
@@ -228,7 +270,10 @@ pub fn compare(a: &str, b: &str, tail_s: u64) -> i32 {
     } else if dt > 1.5 {
         println!("{b} runs {dt:.1}°C hotter at similar RPM — retains heat.");
     } else if dr < -150.0 {
-        println!("{b} runs cooler ({:.0} RPM less): check the ambient was the same.", -dr);
+        println!(
+            "{b} runs cooler ({:.0} RPM less): check the ambient was the same.",
+            -dr
+        );
     } else {
         println!("no measurable effect, within noise — the case doesn't trap heat.");
     }

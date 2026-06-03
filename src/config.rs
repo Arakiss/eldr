@@ -52,13 +52,18 @@ impl Config {
     /// Read a flag that defaults to `default` when unset. `1`/`true`/`yes` are true.
     pub fn flag(&self, key: &str, default: bool) -> bool {
         match self.get(key) {
-            Some(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+            Some(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
             None => default,
         }
     }
 
     pub fn int(&self, key: &str, default: i64) -> i64 {
-        self.get(key).and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+        self.get(key)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default)
     }
 }
 
@@ -71,7 +76,9 @@ pub fn default_path() -> std::path::PathBuf {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("{}/.config", home()));
-    std::path::PathBuf::from(base).join("eldr").join("config.toml")
+    std::path::PathBuf::from(base)
+        .join("eldr")
+        .join("config.toml")
 }
 
 /// `$HOME`, or `/tmp` as a last resort.

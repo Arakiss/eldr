@@ -86,7 +86,8 @@ pub fn sysctl_string(name: &str) -> Option<String> {
     let cname = CString::new(name).ok()?;
     let mut size: usize = 0;
     unsafe {
-        if sysctlbyname(cname.as_ptr(), ptr::null_mut(), &mut size, ptr::null(), 0) != 0 || size == 0
+        if sysctlbyname(cname.as_ptr(), ptr::null_mut(), &mut size, ptr::null(), 0) != 0
+            || size == 0
         {
             return None;
         }
@@ -268,7 +269,11 @@ pub fn cpu_usage(t0: &[[u64; 4]], t1: &[[u64; 4]]) -> Vec<f32> {
         let total1 = busy1 + t1[i][2];
         let dbusy = busy1.saturating_sub(busy0) as f32;
         let dtotal = total1.saturating_sub(total0) as f32;
-        out.push(if dtotal > 0.0 { (dbusy / dtotal).clamp(0.0, 1.0) } else { 0.0 });
+        out.push(if dtotal > 0.0 {
+            (dbusy / dtotal).clamp(0.0, 1.0)
+        } else {
+            0.0
+        });
     }
     out
 }

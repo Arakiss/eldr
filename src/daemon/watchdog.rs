@@ -92,7 +92,11 @@ impl Watchdog {
             if agents.is_empty() {
                 "none".into()
             } else {
-                agents.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ")
+                agents
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             }
         ));
 
@@ -122,7 +126,10 @@ impl Watchdog {
                 continue;
             }
             if dry {
-                let a = Action { kind: "checkpoint", detail: format!("would checkpoint {cwd}") };
+                let a = Action {
+                    kind: "checkpoint",
+                    detail: format!("would checkpoint {cwd}"),
+                };
                 wlog(&format!("  {}", a.detail));
                 actions.push(a);
             } else if let Some(sha) = git_stash_create(&cwd) {
@@ -132,7 +139,10 @@ impl Watchdog {
                     &sha[..sha.len().min(12)]
                 );
                 wlog(&format!("  {detail}"));
-                actions.push(Action { kind: "checkpoint", detail });
+                actions.push(Action {
+                    kind: "checkpoint",
+                    detail,
+                });
             }
         }
         actions
@@ -142,15 +152,23 @@ impl Watchdog {
     fn do_interrupt(&self, agents: &[i32], dry: bool) -> Vec<Action> {
         let mut actions = Vec::new();
         for &pid in agents {
-            let Some(surf) = cmux::surface_for_pid(pid) else { continue };
+            let Some(surf) = cmux::surface_for_pid(pid) else {
+                continue;
+            };
             if dry {
-                let a = Action { kind: "interrupt", detail: format!("would Escape {surf} (pid {pid})") };
+                let a = Action {
+                    kind: "interrupt",
+                    detail: format!("would Escape {surf} (pid {pid})"),
+                };
                 wlog(&format!("  {}", a.detail));
                 actions.push(a);
             } else if cmux::send_key(&surf, "Escape") {
                 let detail = format!("interrupted {surf} (pid {pid})");
                 wlog(&format!("  {detail}"));
-                actions.push(Action { kind: "interrupt", detail });
+                actions.push(Action {
+                    kind: "interrupt",
+                    detail,
+                });
             }
         }
         actions
@@ -180,7 +198,10 @@ impl Watchdog {
                 top.pid, top.name, top.cpu
             );
             wlog(&format!("  {detail}"));
-            actions.push(Action { kind: "suspend", detail });
+            actions.push(Action {
+                kind: "suspend",
+                detail,
+            });
         }
         actions
     }
@@ -232,7 +253,9 @@ pub fn test_report() -> i32 {
     };
     let actions = demo.intervene(&snap, true);
     if actions.is_empty() {
-        println!("  (no reversible targets right now: no dirty agent repos, no agent surfaces, top process protected)");
+        println!(
+            "  (no reversible targets right now: no dirty agent repos, no agent surfaces, top process protected)"
+        );
     } else {
         for a in &actions {
             println!("  [{}] {}", a.kind, a.detail);
@@ -259,10 +282,37 @@ pub fn is_protected(pid: i32, name: &str, agents: &[i32]) -> bool {
         return true;
     }
     const DENY: &[&str] = &[
-        "kernel_task", "launchd", "WindowServer", "loginwindow", "logind", "Finder", "Dock",
-        "SystemUIServer", "coreaudiod", "cmux", "claude", "codex", "node", "eldr", "thermalstate",
-        "smctemp", "sh", "bash", "zsh", "fish", "tmux", "caffeinate", "mds", "mds_stores",
-        "backupd", "powerd", "hidd", "Ghostty", "Terminal", "iTerm2", "WindowManager",
+        "kernel_task",
+        "launchd",
+        "WindowServer",
+        "loginwindow",
+        "logind",
+        "Finder",
+        "Dock",
+        "SystemUIServer",
+        "coreaudiod",
+        "cmux",
+        "claude",
+        "codex",
+        "node",
+        "eldr",
+        "thermalstate",
+        "smctemp",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "tmux",
+        "caffeinate",
+        "mds",
+        "mds_stores",
+        "backupd",
+        "powerd",
+        "hidd",
+        "Ghostty",
+        "Terminal",
+        "iTerm2",
+        "WindowManager",
     ];
     let lname = name.to_ascii_lowercase();
     DENY.iter().any(|d| {
@@ -317,7 +367,11 @@ fn git_stash_store(cwd: &str, sha: &str) {
 fn record_suspended(pid: i32) {
     use std::io::Write;
     let path = config::ensure_data_dir().join("suspended.pids");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(f, "{pid}");
     }
 }

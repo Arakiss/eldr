@@ -50,7 +50,11 @@ pub fn run(interval_secs: u64) -> i32 {
     eprintln!(
         "eldr guard: every {interval_secs}s -> {}  (watchdog: confirm={} interrupt={} checkpoint={} suspend={} dryrun={})",
         config::status_path().display(),
-        wd.confirm, wd.interrupt, wd.checkpoint, wd.suspend, wd.dryrun,
+        wd.confirm,
+        wd.interrupt,
+        wd.checkpoint,
+        wd.suspend,
+        wd.dryrun,
     );
 
     let mut last = Level::Ok;
@@ -111,7 +115,11 @@ fn handle_transitions(s: &Snapshot, last: &mut Level) {
             ),
         );
         snapshot_processes(s);
-        let color = if s.level == Level::Alert { "#f85149" } else { "#d29922" };
+        let color = if s.level == Level::Alert {
+            "#f85149"
+        } else {
+            "#d29922"
+        };
         cmux::badge_all(
             s.level.as_str(),
             &format!("{:.0}°C {}rpm", s.cpu_temp, s.fan_rpm),
@@ -165,7 +173,11 @@ fn snapshot_processes(s: &Snapshot) {
 
 fn append(path: &std::path::Path, text: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = f.write_all(text.as_bytes());
     }
 }
@@ -193,7 +205,11 @@ pub fn running_pid() -> Option<i32> {
     let txt = std::fs::read_to_string(config::pid_path()).ok()?;
     let pid: i32 = txt.trim().parse().ok()?;
     // signal 0 probes existence without delivering a signal.
-    if unsafe { kill(pid, 0) } == 0 { Some(pid) } else { None }
+    if unsafe { kill(pid, 0) } == 0 {
+        Some(pid)
+    } else {
+        None
+    }
 }
 
 /// Stop a running guard (SIGTERM). Returns true if one was signalled.

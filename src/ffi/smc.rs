@@ -76,7 +76,10 @@ impl Smc {
                 let rc = unsafe { IOServiceOpen(device, mach_task_self(), 0, &mut conn) };
                 unsafe { crate::ffi::iokit::IOObjectRelease(device) };
                 if rc == 0 {
-                    return Some(Smc { conn, key_info_cache: HashMap::new() });
+                    return Some(Smc {
+                        conn,
+                        key_info_cache: HashMap::new(),
+                    });
                 }
                 return None;
             }
@@ -116,7 +119,11 @@ impl Smc {
         if let Some(ki) = self.key_info_cache.get(&k) {
             return Some(*ki);
         }
-        let input = KeyData { data8: 9, key: k, ..Default::default() };
+        let input = KeyData {
+            data8: 9,
+            key: k,
+            ..Default::default()
+        };
         let out = self.call(&input)?;
         self.key_info_cache.insert(k, out.key_info);
         Some(out.key_info)
@@ -146,7 +153,11 @@ impl Smc {
 
     /// Resolve the SMC key name at a given index.
     fn key_by_index(&self, index: u32) -> Option<String> {
-        let input = KeyData { data8: 8, data32: index, ..Default::default() };
+        let input = KeyData {
+            data8: 8,
+            data32: index,
+            ..Default::default()
+        };
         let out = self.call(&input)?;
         Some(
             std::str::from_utf8(&out.key.to_be_bytes())
@@ -184,11 +195,15 @@ impl Smc {
             if !is_cpu && !is_gpu {
                 continue;
             }
-            let Some(ki) = self.read_key_info(&name) else { continue };
+            let Some(ki) = self.read_key_info(&name) else {
+                continue;
+            };
             if ki.data_size != 4 || ki.data_type != FLOAT_TYPE {
                 continue;
             }
-            let Some(v) = self.read_f32(&name) else { continue };
+            let Some(v) = self.read_f32(&name) else {
+                continue;
+            };
             if v > 0.0 && v <= 150.0 {
                 if is_cpu {
                     cpu.push(v);
@@ -197,7 +212,13 @@ impl Smc {
                 }
             }
         }
-        let avg = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+        let avg = |v: &[f32]| {
+            if v.is_empty() {
+                0.0
+            } else {
+                v.iter().sum::<f32>() / v.len() as f32
+            }
+        };
         (avg(&cpu), avg(&gpu))
     }
 }

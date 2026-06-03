@@ -6,11 +6,11 @@
 //! delta -> iterate channels, reading integer values (energy in mJ over the window)
 //! and state residencies (active-frequency per cluster).
 
+use crate::ffi::cf::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 use crate::ffi::cf::{
     CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryRef, CFMutableDictionaryRef,
     CFRelease, CFStringRef, CFTypeRef, cfdict_get_val, cfstr, from_cfstr,
 };
-use crate::ffi::cf::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 use core::ffi::c_void;
 use std::ptr;
 
@@ -172,7 +172,12 @@ impl IOReportIterator {
         } else {
             unsafe { CFArrayGetCount(items) }
         };
-        IOReportIterator { sample, items, items_size, index: 0 }
+        IOReportIterator {
+            sample,
+            items,
+            items_size,
+            index: 0,
+        }
     }
 }
 
@@ -201,8 +206,7 @@ impl Iterator for IOReportIterator {
         if self.index >= self.items_size {
             return None;
         }
-        let item =
-            unsafe { CFArrayGetValueAtIndex(self.items, self.index) } as CFDictionaryRef;
+        let item = unsafe { CFArrayGetValueAtIndex(self.items, self.index) } as CFDictionaryRef;
         self.index += 1;
         let group = cfstr_field(unsafe { IOReportChannelGetGroup(item) });
         let subgroup = cfstr_field(unsafe { IOReportChannelGetSubGroup(item) });
@@ -210,12 +214,22 @@ impl Iterator for IOReportIterator {
         let unit = cfstr_field(unsafe { IOReportChannelGetUnitLabel(item) })
             .trim()
             .to_string();
-        Some(Channel { group, subgroup, channel, unit, item })
+        Some(Channel {
+            group,
+            subgroup,
+            channel,
+            unit,
+            item,
+        })
     }
 }
 
 fn cfstr_field(s: CFStringRef) -> String {
-    if s.is_null() { String::new() } else { from_cfstr(s) }
+    if s.is_null() {
+        String::new()
+    } else {
+        from_cfstr(s)
+    }
 }
 
 // MARK: per-channel readers

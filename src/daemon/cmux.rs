@@ -83,7 +83,13 @@ pub fn badge_all(level: &str, text: &str, color: &str) {
         return;
     }
     for ws in workspaces() {
-        set_status(&ws, "thermal", &format!("{level} {text}"), "thermometer", color);
+        set_status(
+            &ws,
+            "thermal",
+            &format!("{level} {text}"),
+            "thermometer",
+            color,
+        );
     }
 }
 

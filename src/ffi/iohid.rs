@@ -2,12 +2,12 @@
 //! `sensors`). Reads AppleVendor temperature sensors with no sudo. CPU temp is the
 //! mean of the `pACC`/`eACC MTR` sensors; GPU temp the mean of `GPU MTR` sensors.
 
+use crate::ffi::cf::{CFAllocatorRef, CFTypeRef};
 use crate::ffi::cf::{
     CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef, CFDictionaryCreate, CFDictionaryRef,
     CFRelease, CFStringRef, cfnum, cfstr, from_cfstr, kCFTypeDictionaryKeyCallBacks,
     kCFTypeDictionaryValueCallBacks,
 };
-use crate::ffi::cf::{CFAllocatorRef, CFTypeRef};
 use core::ffi::c_void;
 use std::ptr;
 
@@ -28,12 +28,18 @@ const K_IOHID_EVENT_TYPE_TEMPERATURE: i64 = 15;
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOHIDEventSystemClientCreate(allocator: CFAllocatorRef) -> IOHIDEventSystemClientRef;
-    fn IOHIDEventSystemClientSetMatching(client: IOHIDEventSystemClientRef, m: CFDictionaryRef)
-    -> i32;
+    fn IOHIDEventSystemClientSetMatching(
+        client: IOHIDEventSystemClientRef,
+        m: CFDictionaryRef,
+    ) -> i32;
     fn IOHIDEventSystemClientCopyServices(client: IOHIDEventSystemClientRef) -> CFArrayRef;
     fn IOHIDServiceClientCopyProperty(s: IOHIDServiceClientRef, key: CFStringRef) -> CFStringRef;
-    fn IOHIDServiceClientCopyEvent(s: IOHIDServiceClientRef, ty: i64, a: i32, b: i64)
-    -> IOHIDEventRef;
+    fn IOHIDServiceClientCopyEvent(
+        s: IOHIDServiceClientRef,
+        ty: i64,
+        a: i32,
+        b: i64,
+    ) -> IOHIDEventRef;
     fn IOHIDEventGetFloatValue(event: IOHIDEventRef, field: i64) -> f64;
 }
 
@@ -139,6 +145,12 @@ pub fn temps() -> (f32, f32) {
             gpu.push(*val);
         }
     }
-    let avg = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+    let avg = |v: &[f32]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
+    };
     (avg(&cpu), avg(&gpu))
 }

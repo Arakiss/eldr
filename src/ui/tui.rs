@@ -86,12 +86,22 @@ fn render(s: &Snapshot, cpu_hist: &[f64], rpm_hist: &[f64]) -> String {
 
     let rule = "─".repeat(60);
     // ISO timestamp "YYYY-MM-DDTHH:MM:SSZ" -> "HH:MM:SS"; tolerate short/empty ts.
-    let clock = if s.ts.len() >= 19 { &s.ts[11..19] } else { "--:--:--" };
+    let clock = if s.ts.len() >= 19 {
+        &s.ts[11..19]
+    } else {
+        "--:--:--"
+    };
 
     line(
         format!(
             " {b}eldr{z} {d}·{z} {chip} {d}·{z} {p}P+{e}E {d}·{z} {g} GPU{pad}{d}{clock}{z}",
-            b = b, z = z, d = d, chip = s.chip, p = s.p_cores, e = s.e_cores, g = s.gpu_cores,
+            b = b,
+            z = z,
+            d = d,
+            chip = s.chip,
+            p = s.p_cores,
+            e = s.e_cores,
+            g = s.gpu_cores,
             pad = " ".repeat(pad_to(&s.chip, s.p_cores, s.e_cores, s.gpu_cores)),
             clock = clock,
         ),
@@ -102,66 +112,120 @@ fn render(s: &Snapshot, cpu_hist: &[f64], rpm_hist: &[f64]) -> String {
     line(
         format!(
             " {d}STATE{z}  {lc}{b}{lvl:<6}{z}  {d}thermal{z} {tc}{th}{z}",
-            d = d, z = z, lc = lc, b = b, lvl = s.level.as_str(), tc = tc, th = s.thermal.as_str(),
+            d = d,
+            z = z,
+            lc = lc,
+            b = b,
+            lvl = s.level.as_str(),
+            tc = tc,
+            th = s.thermal.as_str(),
         ),
         &mut f,
     );
 
-    let cores = sparkline(&s.per_core.iter().map(|&v| v as f64).collect::<Vec<_>>(), 0.0, 1.0);
+    let cores = sparkline(
+        &s.per_core.iter().map(|&v| v as f64).collect::<Vec<_>>(),
+        0.0,
+        1.0,
+    );
     line(
         format!(
             " {d}CPU{z}    P {pf:>4} {d}·{z} E {ef:>4} MHz   {d}busy{z} {busy:>3.0}%   {cores}",
-            d = d, z = z, pf = s.pcpu_freq_mhz, ef = s.ecpu_freq_mhz,
-            busy = s.cpu_usage_pct * 100.0, cores = cores,
+            d = d,
+            z = z,
+            pf = s.pcpu_freq_mhz,
+            ef = s.ecpu_freq_mhz,
+            busy = s.cpu_usage_pct * 100.0,
+            cores = cores,
         ),
         &mut f,
     );
     line(
         format!(
             " {d}GPU{z}    {gf:>4} MHz   {d}busy{z} {busy:>3.0}%",
-            d = d, z = z, gf = s.gpu_freq_mhz, busy = s.gpu_active * 100.0,
+            d = d,
+            z = z,
+            gf = s.gpu_freq_mhz,
+            busy = s.gpu_active * 100.0,
         ),
         &mut f,
     );
     line(
         format!(
             " {d}PWR{z}    cpu {cpu:>4.1} {d}·{z} gpu {gpu:>4.1} {d}·{z} ane {ane:>4.1} {d}·{z} pkg {b}{all:>4.1}{z} {d}·{z} sys {sys:>4.1} W",
-            d = d, z = z, b = b, cpu = s.cpu_power, gpu = s.gpu_power, ane = s.ane_power,
-            all = s.all_power, sys = s.sys_power,
+            d = d,
+            z = z,
+            b = b,
+            cpu = s.cpu_power,
+            gpu = s.gpu_power,
+            ane = s.ane_power,
+            all = s.all_power,
+            sys = s.sys_power,
         ),
         &mut f,
     );
 
     let fan = if s.fan_max > 0 {
-        format!("{rpm} {d}({min}–{max}){z}", rpm = s.fan_rpm, min = s.fan_min, max = s.fan_max, d = d, z = z)
+        format!(
+            "{rpm} {d}({min}–{max}){z}",
+            rpm = s.fan_rpm,
+            min = s.fan_min,
+            max = s.fan_max,
+            d = d,
+            z = z
+        )
     } else {
         format!("{d}n/a{z}", d = d, z = z)
     };
     line(
         format!(
             " {d}TMP{z}    cpu {ct:>2.0}°C {d}·{z} gpu {gt:>2.0}°C   {d}fan{z} {fan}",
-            d = d, z = z, ct = s.cpu_temp, gt = s.gpu_temp, fan = fan,
+            d = d,
+            z = z,
+            ct = s.cpu_temp,
+            gt = s.gpu_temp,
+            fan = fan,
         ),
         &mut f,
     );
 
-    let ram_frac = if s.ram_total > 0 { s.ram_used as f64 / s.ram_total as f64 } else { 0.0 };
+    let ram_frac = if s.ram_total > 0 {
+        s.ram_used as f64 / s.ram_total as f64
+    } else {
+        0.0
+    };
     line(
         format!(
             " {d}RAM{z}    {bar}  {used:.1} / {total:.1} GiB  {pct:.0}%",
-            d = d, z = z, bar = bar(ram_frac, 0.0, 1.0, 18),
-            used = gib(s.ram_used), total = gib(s.ram_total), pct = ram_frac * 100.0,
+            d = d,
+            z = z,
+            bar = bar(ram_frac, 0.0, 1.0, 18),
+            used = gib(s.ram_used),
+            total = gib(s.ram_total),
+            pct = ram_frac * 100.0,
         ),
         &mut f,
     );
 
     line(
-        format!(" {d}cpu%{z}   {y}{spark}{z}", d = d, z = z, y = st.green, spark = sparkline(cpu_hist, 0.0, 100.0)),
+        format!(
+            " {d}cpu%{z}   {y}{spark}{z}",
+            d = d,
+            z = z,
+            y = st.green,
+            spark = sparkline(cpu_hist, 0.0, 100.0)
+        ),
         &mut f,
     );
     let rpm_hi = (s.fan_max.max(1)) as f64;
     line(
-        format!(" {d}rpm{z}    {y}{spark}{z}", d = d, z = z, y = st.yellow, spark = sparkline(rpm_hist, (s.fan_min as f64).min(rpm_hi), rpm_hi)),
+        format!(
+            " {d}rpm{z}    {y}{spark}{z}",
+            d = d,
+            z = z,
+            y = st.yellow,
+            spark = sparkline(rpm_hist, (s.fan_min as f64).min(rpm_hi), rpm_hi)
+        ),
         &mut f,
     );
 
@@ -177,7 +241,15 @@ fn render(s: &Snapshot, cpu_hist: &[f64], rpm_hist: &[f64]) -> String {
     }
 
     line(format!(" {d}{rule}{z}", d = d, z = z, rule = rule), &mut f);
-    line(format!(" {d}q{z} quit {d}·{z} {d}every {ms}ms{z}", d = d, z = z, ms = SAMPLE_MS), &mut f);
+    line(
+        format!(
+            " {d}q{z} quit {d}·{z} {d}every {ms}ms{z}",
+            d = d,
+            z = z,
+            ms = SAMPLE_MS
+        ),
+        &mut f,
+    );
 
     f.push_str(term::clear_eos());
     f
@@ -228,7 +300,11 @@ mod tests {
         s.ram_used = 41 << 30;
         s.thermal = Thermal::Fair;
         s.level = Level::Warn;
-        s.top_procs = vec![ProcInfo { pid: 1, cpu: 6.0, name: "Virtua".into() }];
+        s.top_procs = vec![ProcInfo {
+            pid: 1,
+            cpu: 6.0,
+            name: "Virtua".into(),
+        }];
 
         let out = render(&s, &[10.0, 20.0, 30.0], &[1000.0, 1700.0]);
         // Frame starts at home, ends clearing to end of screen.

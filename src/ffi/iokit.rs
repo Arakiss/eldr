@@ -9,8 +9,11 @@ use std::ptr;
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOServiceMatching(name: *const c_char) -> CFMutableDictionaryRef;
-    fn IOServiceGetMatchingServices(main_port: u32, matching: CFDictionaryRef, existing: *mut u32)
-    -> i32;
+    fn IOServiceGetMatchingServices(
+        main_port: u32,
+        matching: CFDictionaryRef,
+        existing: *mut u32,
+    ) -> i32;
     fn IOIteratorNext(iterator: u32) -> u32;
     fn IORegistryEntryGetName(entry: u32, name: *mut c_char) -> i32;
     fn IORegistryEntryCreateCFProperties(
