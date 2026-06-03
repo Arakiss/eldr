@@ -8,6 +8,9 @@ use crate::sensors::snapshot::{Level, Snapshot, Thermal};
 use crate::ui::style::{Style, bar, gib, sparkline};
 use crate::ui::term::{self, RawMode};
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 const SAMPLE_MS: u64 = 250;
 const HIST: usize = 48;
@@ -21,15 +24,70 @@ struct Ui {
     help: bool,
 }
 
+/// A minimal frame shown before the first sample arrives, so startup never looks frozen.
+fn loading_frame() -> String {
+    let st = Style::color();
+    format!(
+        "{home} {b}eldr{z}  {d}reading sensors…{z}{eol}\n{eos}",
+        home = term::home(),
+        b = st.bold,
+        z = st.reset,
+        d = st.dim,
+        eol = term::clear_eol(),
+        eos = term::clear_eos(),
+    )
+}
+
 /// Run the dashboard until the user quits. `interval_ms` is the target refresh.
+///
+/// Sampling runs on its own thread so `gather()` — which sleeps to sample IOReport and
+/// enumerates SMC — never blocks the input loop. Keys and quit stay instant, and a
+/// "loading" frame shows before the first reading arrives. On quit we just signal the
+/// sampler and return; the [`RawMode`] guard restores the terminal on drop, so exit is
+/// immediate and never waits on the in-flight gather.
 pub fn run(interval_ms: u64) {
     let Some(_raw) = RawMode::enter() else {
         eprintln!("eldr: not a terminal (tui needs a tty)");
         return;
     };
 
+    let running = Arc::new(AtomicBool::new(true));
+    let paused = Arc::new(AtomicBool::new(false));
+    let interval = Arc::new(AtomicU64::new(
+        interval_ms.clamp(MIN_INTERVAL, MAX_INTERVAL),
+    ));
+    let (tx, rx) = mpsc::channel::<Snapshot>();
+
+    // Sampling thread. Checks `running` every 100ms so exit is prompt.
+    {
+        let running = running.clone();
+        let paused = paused.clone();
+        let interval = interval.clone();
+        std::thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                if paused.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                let mut snap = Snapshot::gather(SAMPLE_MS);
+                snap.source = "tui".into();
+                let _ = snap.write_status();
+                if tx.send(snap).is_err() {
+                    break;
+                }
+                let extra = interval.load(Ordering::Relaxed).saturating_sub(SAMPLE_MS);
+                let mut slept = 0u64;
+                while slept < extra && running.load(Ordering::Relaxed) {
+                    let chunk = (extra - slept).min(100);
+                    std::thread::sleep(Duration::from_millis(chunk));
+                    slept += chunk;
+                }
+            }
+        });
+    }
+
     let mut ui = Ui {
-        interval_ms: interval_ms.clamp(MIN_INTERVAL, MAX_INTERVAL),
+        interval_ms: interval.load(Ordering::Relaxed),
         paused: false,
         help: false,
     };
@@ -37,42 +95,63 @@ pub fn run(interval_ms: u64) {
     let mut rpm_hist: Vec<f64> = Vec::with_capacity(HIST);
     let mut last: Option<Snapshot> = None;
 
+    let draw = |snap: &Snapshot, cpu: &[f64], rpm: &[f64], ui: &Ui| {
+        let frame = render(snap, cpu, rpm, ui);
+        let mut out = std::io::stdout();
+        let _ = out.write_all(frame.as_bytes());
+        let _ = out.flush();
+    };
+
+    // Immediate loading frame.
+    {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(loading_frame().as_bytes());
+        let _ = out.flush();
+    }
+
     loop {
-        if !ui.paused {
-            let mut snap = Snapshot::gather(SAMPLE_MS);
-            snap.source = "tui".into();
-            let _ = snap.write_status();
+        let mut dirty = false;
+        // Drain fresh snapshots; keep the newest.
+        while let Ok(snap) = rx.try_recv() {
             push_hist(&mut cpu_hist, (snap.cpu_load_pct * 100.0) as f64);
             push_hist(&mut rpm_hist, snap.fan_rpm as f64);
             last = Some(snap);
+            dirty = true;
         }
 
-        if let Some(snap) = &last {
-            let frame = render(snap, &cpu_hist, &rpm_hist, &ui);
-            let mut out = std::io::stdout();
-            let _ = out.write_all(frame.as_bytes());
-            let _ = out.flush();
-        }
-
-        // Paused: poll keys briefly so the UI stays responsive without resampling.
-        let wait = if ui.paused {
-            150
-        } else {
-            ui.interval_ms.saturating_sub(SAMPLE_MS).max(50) as i32
-        };
-        if let Some(k) = term::read_key(wait) {
+        // Short poll so q/Ctrl-C and key actions respond instantly.
+        if let Some(k) = term::read_key(80) {
             match k {
                 b'q' | b'Q' | 3 => break,
-                b' ' => ui.paused = !ui.paused,
-                b'+' | b'=' => {
-                    ui.interval_ms = ui.interval_ms.saturating_sub(250).max(MIN_INTERVAL)
+                b' ' => {
+                    ui.paused = !ui.paused;
+                    paused.store(ui.paused, Ordering::Relaxed);
+                    dirty = true;
                 }
-                b'-' | b'_' => ui.interval_ms = (ui.interval_ms + 250).min(MAX_INTERVAL),
-                b'?' => ui.help = !ui.help,
+                b'+' | b'=' => {
+                    ui.interval_ms = ui.interval_ms.saturating_sub(250).max(MIN_INTERVAL);
+                    interval.store(ui.interval_ms, Ordering::Relaxed);
+                    dirty = true;
+                }
+                b'-' | b'_' => {
+                    ui.interval_ms = (ui.interval_ms + 250).min(MAX_INTERVAL);
+                    interval.store(ui.interval_ms, Ordering::Relaxed);
+                    dirty = true;
+                }
+                b'?' => {
+                    ui.help = !ui.help;
+                    dirty = true;
+                }
                 _ => {}
             }
         }
+
+        if dirty && let Some(snap) = &last {
+            draw(snap, &cpu_hist, &rpm_hist, &ui);
+        }
     }
+
+    running.store(false, Ordering::Relaxed);
 }
 
 fn push_hist(h: &mut Vec<f64>, v: f64) {
