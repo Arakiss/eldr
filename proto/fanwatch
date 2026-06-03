@@ -1,0 +1,387 @@
+#!/usr/bin/env bash
+# fanwatch — thermal toolkit for Apple Silicon (Mac mini M4 Pro). No sudo.
+#
+# Readings (all admin-free):
+#   temp  -> smctemp (a specific die SMC key, NOT "the" CPU — use deltas, not absolutes)
+#   fan   -> SMC key F0Ac (min 1000 / max 4900 RPM on this machine)
+#   throttle -> macOS thermalState: nominal < fair < serious < critical
+#
+# Commands:
+#   fanwatch now                         pretty one-shot snapshot
+#   fanwatch check                       terse line + exit 0/1/2 (OK/WARN/ALERT) — what an agent reads
+#   fanwatch status                      pretty panel (live, or last guard sample)
+#   fanwatch tui [--interval N]          live self-refreshing dashboard (bars + sparklines)
+#   fanwatch guard [--interval N]        background monitor: refresh status.json, log + notify on alert
+#   fanwatch guard-stop                  stop the running guard process
+#   fanwatch guard-install               run guard 24/7 via launchd (start at login, restart on crash)
+#   fanwatch guard-uninstall             remove the launchd agent
+#   fanwatch bench <label> [opts]        controlled load -> steady state (the clean experiment)
+#       --dur N (s, def 1200)  --interval N (def 15)  --cmd "<your fixed workload>"
+#   fanwatch report  <label> [--tail N]  steady-state summary (tail window, def 300s)
+#   fanwatch compare <a> <b> [--tail N]  iso-load delta + verdict (bare vs case)
+#   fanwatch list
+#
+# Why bench and not "log for days": a passive baseline is confounded by ambient drift
+# (Madrid in June) and unmatched load. Run bare and case back-to-back, same day, same room.
+# Files in ~/.local/share/fanwatch/ (override FANWATCH_DIR). Agent contract: read status.json.
+set -uo pipefail
+
+DIR="${FANWATCH_DIR:-$HOME/.local/share/fanwatch}"; mkdir -p "$DIR"
+STATUS="$DIR/status.json"; ALERTS="$DIR/alerts.log"; PIDF="$DIR/guard.pid"
+THERMAL_BIN="$HOME/.local/bin/thermalstate"
+
+# thresholds (M4 Pro: throttles ~105-110°C, fan max 4900)
+WARN_CPU=100; ALERT_CPU=105; WARN_RPM=3800; ALERT_RPM=4600
+
+# colors only on a tty
+if [[ -t 1 ]]; then B=$'\e[1m'; D=$'\e[2m'; R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; Z=$'\e[0m'
+else B=; D=; R=; G=; Y=; Z=; fi
+
+fan_rpm() { smctemp -l 2>/dev/null | grep -E '^[[:space:]]*F0Ac[[:space:]]' | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1; }
+fan_max() { smctemp -l 2>/dev/null | grep -E '^[[:space:]]*F0Mx[[:space:]]' | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1; }
+cpu_c()   { smctemp -c -n3 2>/dev/null; }
+gpu_c()   { smctemp -g -n3 2>/dev/null; }
+thermal() { [[ -x "$THERMAL_BIN" ]] && "$THERMAL_BIN" 2>/dev/null || echo "unknown"; }
+FANMAX="$(fan_max)"; FANMAX="${FANMAX:-4900}"
+
+opt() { local k="$1"; shift; while [[ $# -gt 0 ]]; do [[ "$1" == "$k" ]] && { echo "$2"; return; }; shift; done; }
+
+level_of() { # cpu rpm thermal -> OK|WARN|ALERT
+  # Gate ONLY on macOS thermalState — the clean throttle signal. The smctemp die temp ($1)
+  # reads high on healthy hardware (~97°C at nominal under load in our own test), so it is
+  # informative, not a trigger; gating on it produced false alarms. RPM ($2) shown, not gated.
+  case "${3:-unknown}" in serious|critical) echo ALERT;; fair) echo WARN;; *) echo OK;; esac
+}
+lvl_color() { case "$1" in OK) printf '%s' "$G";; WARN) printf '%s' "$Y";; ALERT) printf '%s' "$R$B";; *) printf '%s' "";; esac; }
+
+bar() { awk -v v="${1:-0}" -v lo="$2" -v hi="$3" -v w="${4:-20}" 'BEGIN{
+  f=int((v-lo)/(hi-lo)*w); if(f<0)f=0; if(f>w)f=w; s="";
+  for(i=0;i<f;i++)s=s"█"; for(i=f;i<w;i++)s=s"░"; printf "%s", s }'; }
+
+SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+sparkline() { # lo hi v1 v2 ...  (integer buckets, multibyte-safe)
+  local lo=$1 hi=$2; shift 2; local out="" v idx
+  for v in "$@"; do v=${v%.*}; [[ $v =~ ^-?[0-9]+$ ]] || v=$lo
+    idx=$(( (v-lo)*7/(hi-lo>0?hi-lo:1) )); ((idx<0))&&idx=0; ((idx>7))&&idx=7; out+="${SPARK[idx]}"
+  done; printf '%s' "$out"; }
+
+write_status() { # cpu gpu fan thermal level source
+  local c=${1:-0} g=${2:-0} f=${3:-0} t=${4:-unknown} l=${5:-OK} s=${6:-oneshot}
+  [[ $c =~ ^[0-9.]+$ ]] || c=0; [[ $g =~ ^[0-9.]+$ ]] || g=0; [[ $f =~ ^[0-9]+$ ]] || f=0
+  printf '{"ts":"%s","cpu_c":%s,"gpu_c":%s,"fan_rpm":%s,"fan_max":%s,"thermal":"%s","level":"%s","source":"%s"}\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S)" "$c" "$g" "$f" "$FANMAX" "$t" "$l" "$s" > "$STATUS"
+}
+
+panel() { # cpu gpu fan thermal level  -> pretty block
+  local c=$1 g=$2 f=$3 t=$4 l=$5; local lc; lc="$(lvl_color "$l")"
+  local tc=$G; [[ $t == fair ]] && tc=$Y; [[ $t == serious || $t == critical ]] && tc=$R
+  printf "  %sCPU%s  %5s°C  %s%s%s\n" "$D" "$Z" "$c" "$R" "$(bar "${c%.*}" 40 110 22)" "$Z"
+  printf "  %sFan%s  %4s   %s%s%s  %s/%s\n" "$D" "$Z" "$f" "$Y" "$(bar "$f" 1000 "$FANMAX" 22)" "$Z" "$f" "$FANMAX"
+  printf "  %sGPU%s  %5s°C    thermal %s%s%s    estado %s%s%s\n" "$D" "$Z" "$g" "$tc" "$t" "$Z" "$lc" "$l" "$Z"
+}
+
+# --- watchdog layer --------------------------------------------------------------
+# Hard guarantees: every action is REVERSIBLE (Escape / SIGSTOP+auto-SIGCONT / git
+# stash-create). Never kill, never shut down, never close a session. A single bad
+# reading can't fire: interventions need CONFIRM consecutive *critical* samples, and
+# agents are only ever NOTIFIED (never sent a prompt they would execute).
+WD_CONF="${FANWATCH_CONF:-$HOME/.config/fanwatch/watchdog.conf}"
+[[ -f "$WD_CONF" ]] && . "$WD_CONF"
+: "${FANWATCH_CMUX:=1}"        # fan out alerts to cmux sessions (safe, passive)
+: "${FANWATCH_INTERRUPT:=0}"   # critical: Escape to agent surfaces (pause generation)
+: "${FANWATCH_CHECKPOINT:=0}"  # critical: git stash-create snapshot of dirty agent repos
+: "${FANWATCH_SUSPEND:=0}"     # critical: SIGSTOP top non-protected CPU hog (auto-resume)
+: "${FANWATCH_CONFIRM:=3}"     # consecutive critical samples required before intervening
+: "${FANWATCH_DRYRUN:=0}"      # 1 = log intended actions only, perform nothing
+
+cmux_ws() { command -v cmux >/dev/null 2>&1 && cmux list-workspaces 2>/dev/null | grep -oE 'workspace:[0-9]+'; }
+WLOG() { echo "$(date '+%F %T')  $*" >> "$DIR/actions.log"; }
+
+protect() { # level cpu fan thermal — snapshot processes + alert cmux sessions (no mutation)
+  local lvl=$1 c=$2 f=$3 t=$4 ws color
+  { echo "## $(date '+%F %T')  $lvl  cpu=${c}°C fan=${f}rpm thermal=$t"
+    ps -Aco pid,pcpu,comm -r 2>/dev/null | head -8; echo; } >> "$DIR/processes.log"
+  [[ "$FANWATCH_CMUX" == 1 ]] || return 0
+  color="#d29922"; [[ $lvl == ALERT ]] && color="#f85149"
+  for ws in $(cmux_ws); do
+    cmux set-status thermal "$lvl ${c}°C ${f}rpm" --workspace "$ws" --icon thermometer --color "$color" >/dev/null 2>&1
+    [[ $lvl == ALERT ]] && cmux notify --title "fanwatch · anomalía térmica" --subtitle "thermal $t" \
+      --body "cpu ${c}°C · fan ${f}rpm. Acciones reversibles aplicadas; no apagues nada." --workspace "$ws" >/dev/null 2>&1
+  done
+}
+
+recover() { # clear the thermal badge everywhere
+  [[ "$FANWATCH_CMUX" == 1 ]] || return 0
+  local ws; for ws in $(cmux_ws); do cmux clear-status thermal --workspace "$ws" >/dev/null 2>&1; done
+}
+
+protected_proc() { # pid comm agentpids -> 0 if must NOT be touched
+  local pid=$1 comm=$2 ap=$3
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  (( pid == $$ )) && return 0
+  case " $ap " in *" $pid "*) return 0;; esac
+  printf '%s' "$comm" | grep -qiE 'kernel_task|launchd|WindowServer|loginwindow|logind|Finder|Dock|SystemUIServer|coreaudiod|cmux|claude|codex|node|fanwatch|thermalstate|smctemp|(^|/)(ba)?sh$|zsh|tmux|caffeinate|mds|backupd|powerd|hidd|Ghostty|Terminal' && return 0
+  return 1
+}
+
+intervene() { # cpu fan thermal — armed reversible actions, one-shot per episode
+  local c=$1 f=$2 t=$3 tag=""; [[ "$FANWATCH_DRYRUN" == 1 ]] && tag="[dry] "
+  local ap; ap="$(pgrep -x claude 2>/dev/null; pgrep -x codex 2>/dev/null)"; ap="$(echo $ap)"
+  WLOG "## ${tag}INTERVENE cpu=${c} fan=${f} thermal=$t  (agents: ${ap:-none})"
+
+  if [[ "$FANWATCH_CHECKPOINT" == 1 ]]; then
+    local pid d sha seen=""
+    for pid in $ap; do
+      d="$(lsof -a -d cwd -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+      [[ -n "$d" ]] && git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+      case " $seen " in *" $d "*) continue;; esac; seen="$seen $d"   # dedupe repos
+      [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || continue
+      if [[ "$FANWATCH_DRYRUN" == 1 ]]; then WLOG "  would checkpoint $d"; else
+        sha="$(git -C "$d" stash create 2>/dev/null)"
+        [[ -n "$sha" ]] && git -C "$d" stash store -m "fanwatch $(date '+%F %T')" "$sha" 2>/dev/null \
+          && WLOG "  checkpoint $d -> ${sha:0:12} (recuperar: git -C $d stash apply $sha)"
+      fi
+    done
+  fi
+
+  if [[ "$FANWATCH_INTERRUPT" == 1 ]]; then
+    local pid srf
+    for pid in $ap; do
+      srf="$(cmux top --all --processes --format tsv 2>/dev/null | awk -v p="$pid" '$4=="process"&&$5==p{print $6; exit}')"
+      [[ "$srf" =~ ^surface: ]] || [[ "$srf" == *:tag:* ]] || continue   # only real surface refs
+      if [[ "$FANWATCH_DRYRUN" == 1 ]]; then WLOG "  would Escape $srf (pid $pid)"
+      else cmux send-key --surface "$srf" Escape >/dev/null 2>&1 && WLOG "  interrupted $srf (pid $pid)"; fi
+    done
+  fi
+
+  if [[ "$FANWATCH_SUSPEND" == 1 ]]; then
+    local tp tc tn
+    read -r tp tc tn <<<"$(ps -Aco pid,pcpu,comm -r 2>/dev/null | awk 'NR==2{print $1, $2, $3}')"
+    if protected_proc "$tp" "$tn" "$ap"; then WLOG "  suspend skipped: top=${tn:-none} protected"
+    elif [[ "$FANWATCH_DRYRUN" == 1 ]]; then WLOG "  would SIGSTOP $tp ($tn @ ${tc}%)"
+    else kill -STOP "$tp" 2>/dev/null && { echo "$tp" >> "$DIR/suspended.pids"; WLOG "  SIGSTOP $tp ($tn @ ${tc}%) — auto-SIGCONT al recuperar"; }
+    fi
+  fi
+}
+
+unintervene() { # back to OK: clear badges, resume anything we paused
+  recover
+  [[ -f "$DIR/suspended.pids" ]] || return 0
+  local pid; while read -r pid; do [[ "$pid" =~ ^[0-9]+$ ]] && kill -CONT "$pid" 2>/dev/null && WLOG "SIGCONT $pid (resumed)"; done < "$DIR/suspended.pids"
+  rm -f "$DIR/suspended.pids"
+}
+
+cmd="${1:-now}"; shift || true
+
+case "$cmd" in
+  now|status|check)
+    fresh=1
+    if [[ "$cmd" == status && -f "$STATUS" ]]; then
+      # use guard sample if recent (<90s), else live
+      age=$(( $(date +%s) - $(stat -f %m "$STATUS" 2>/dev/null || echo 0) ))
+      (( age < 90 )) && fresh=0
+    fi
+    if (( fresh )); then
+      IFS=, read -r c g f t <<<"$(printf '%s,%s,%s,%s' "$(cpu_c)" "$(gpu_c)" "$(fan_rpm)" "$(thermal)")"
+      l="$(level_of "$c" "$f" "$t")"; write_status "$c" "$g" "$f" "$t" "$l" oneshot
+    else
+      c=$(grep -o '"cpu_c":[0-9.]*' "$STATUS"|cut -d: -f2); g=$(grep -o '"gpu_c":[0-9.]*' "$STATUS"|cut -d: -f2)
+      f=$(grep -o '"fan_rpm":[0-9]*' "$STATUS"|cut -d: -f2); t=$(grep -o '"thermal":"[a-z]*"' "$STATUS"|cut -d'"' -f4)
+      l=$(grep -o '"level":"[A-Z]*"' "$STATUS"|cut -d'"' -f4)
+    fi
+    case "$cmd" in
+      check) printf '%s cpu=%s°C gpu=%s°C fan=%sRPM thermal=%s\n' "$l" "$c" "$g" "$f" "$t"
+             case "$l" in OK) exit 0;; WARN) exit 1;; ALERT) exit 2;; esac ;;
+      *) echo; printf "  %sfanwatch%s  %s\n" "$B" "$Z" "$( [[ $cmd == status && $fresh -eq 0 ]] && echo "${D}(guard)${Z}" || echo "${D}(en vivo)${Z}" )"
+         panel "$c" "$g" "$f" "$t" "$l"; echo
+         [[ -s "$ALERTS" ]] && { printf "  %súltimas alertas:%s\n" "$D" "$Z"; tail -3 "$ALERTS" | sed 's/^/    /'; } ;;
+    esac
+    ;;
+
+  guard)
+    [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null && { echo "guard ya corriendo (PID $(cat "$PIDF"))"; exit 0; }
+    interval="$(opt --interval "$@")"; interval="${interval:-30}"
+    echo $$ > "$PIDF"
+    trap 'rm -f "$PIDF"; exit 0' INT TERM   # same lesson as the TUI: trap must exit, not just clean up
+    trap 'rm -f "$PIDF"' EXIT
+    echo "fanwatch guard: cada ${interval}s -> $STATUS  (alertas: $ALERTS · acciones: $DIR/actions.log)"
+    last=OK; crit=0; fired=0
+    while :; do
+      c="$(cpu_c)"; g="$(gpu_c)"; f="$(fan_rpm)"; t="$(thermal)"; l="$(level_of "$c" "$f" "$t")"
+      [[ "$f" =~ ^[0-9]+$ ]] && (( f < 500 )) && l=ALERT   # fan stopped/failed = danger regardless of thermal
+      write_status "$c" "$g" "$f" "$t" "$l" guard
+      # only genuine danger escalates to intervention: thermal critical OR fan stopped
+      if [[ "$t" == critical ]] || { [[ "$f" =~ ^[0-9]+$ ]] && (( f < 500 )); }; then crit=$((crit+1)); else crit=0; fi
+      if [[ "$l" != OK && "$l" != "$last" ]]; then
+        echo "$(date +%H:%M:%S) $l cpu=${c}°C fan=${f}RPM thermal=$t" >> "$ALERTS"
+        osascript -e "display notification \"cpu ${c}°C · fan ${f} · ${t}\" with title \"fanwatch $l\" sound name \"Basso\"" 2>/dev/null
+        protect "$l" "$c" "$f" "$t"
+      fi
+      if (( crit >= FANWATCH_CONFIRM && ! fired )); then intervene "$c" "$f" "$t"; fired=1; fi
+      if [[ "$l" == OK && "$last" != OK ]]; then unintervene; fired=0; fi
+      last="$l"; sleep "$interval"
+    done
+    ;;
+
+  guard-stop)
+    [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null && echo "guard detenido" || echo "no había guard"
+    rm -f "$PIDF"
+    ;;
+
+  guard-install)   # run guard 24/7 via launchd: starts at login, restarts on crash
+    GA_LABEL="com.petruarakiss.fanwatch.guard"
+    GA_PLIST="$HOME/Library/LaunchAgents/$GA_LABEL.plist"
+    GA_UID="$(id -u)"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$GA_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$GA_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HOME/.local/bin/fanwatch</string><string>guard</string><string>--interval</string><string>30</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+    <key>FANWATCH_DIR</key><string>$HOME/.local/share/fanwatch</string>
+    <key>LC_ALL</key><string>en_US.UTF-8</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>$HOME/.local/share/fanwatch/guard.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.local/share/fanwatch/guard.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+PLIST
+    launchctl bootout "gui/$GA_UID/$GA_LABEL" 2>/dev/null
+    "$0" guard-stop >/dev/null 2>&1
+    launchctl bootstrap "gui/$GA_UID" "$GA_PLIST" 2>/dev/null || launchctl load -w "$GA_PLIST" 2>/dev/null
+    echo "guard instalado como LaunchAgent ($GA_LABEL) — arranca al login, se reinicia si cae."
+    echo "  parar de verdad: fanwatch guard-uninstall   ·   log: $DIR/guard.log"
+    ;;
+
+  guard-uninstall)
+    GA_LABEL="com.petruarakiss.fanwatch.guard"
+    GA_PLIST="$HOME/Library/LaunchAgents/$GA_LABEL.plist"
+    launchctl bootout "gui/$(id -u)/$GA_LABEL" 2>/dev/null || launchctl unload "$GA_PLIST" 2>/dev/null
+    rm -f "$GA_PLIST"; "$0" guard-stop >/dev/null 2>&1
+    echo "LaunchAgent del guard desinstalado"
+    ;;
+
+  bench)
+    label="${1:?uso: fanwatch bench <label> [--dur N --interval N --cmd \"...\"]}"; shift
+    dur="$(opt --dur "$@")"; dur="${dur:-1200}"
+    interval="$(opt --interval "$@")"; interval="${interval:-15}"
+    load="$(opt --cmd "$@")"; ncpu="$(sysctl -n hw.ncpu)"
+    csv="$DIR/$label.csv"; echo "ts,elapsed,cpu_c,gpu_c,fan_rpm,thermal" > "$csv"
+    pids=(); trap 'for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null; done' EXIT INT TERM
+
+    if [[ -n "$load" ]]; then desc="carga propia: $load"; bash -c "$load" >/dev/null 2>&1 & p=$!; disown "$p" 2>/dev/null; pids+=("$p")
+    elif command -v stress-ng >/dev/null 2>&1; then desc="stress-ng matrixprod ×${ncpu}"; stress-ng --cpu "$ncpu" --cpu-method matrixprod >/dev/null 2>&1 & p=$!; disown "$p" 2>/dev/null; pids+=("$p")
+    else desc="burn yes ×${ncpu} (flojo)"; for ((i=0;i<ncpu;i++)); do yes >/dev/null 2>&1 & p=$!; disown "$p" 2>/dev/null; pids+=("$p"); done; fi
+
+    printf "%sfanwatch bench '%s'%s — %s · %ss · muestra/%ss\n" "$B" "$label" "$Z" "$desc" "$dur" "$interval"
+    echo "${D}  corre bare y case el MISMO día, misma temperatura de habitación.${Z}"
+    SECONDS=0
+    while (( SECONDS < dur )); do
+      [[ -n "$load" ]] && ! kill -0 "${pids[0]}" 2>/dev/null && { echo "  (la carga terminó sola a los ${SECONDS}s)"; break; }
+      e=$SECONDS; c="$(cpu_c)"; g="$(gpu_c)"; f="$(fan_rpm)"; t="$(thermal)"
+      echo "$(date +%H:%M:%S),$e,$c,$g,$f,$t" >> "$csv"
+      printf "  t=%4ss  CPU %5s°C  Fan %s%s%s %4s  %s\n" "$e" "$c" "$Y" "$(bar "$f" 1000 "$FANMAX" 14)" "$Z" "$f" "$t"
+      sleep "$interval"
+    done
+    for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null; done; trap - EXIT INT TERM
+    echo "${G}hecho${Z} -> $csv"; "$0" report "$label"
+    ;;
+
+  report|compare)
+    summarize() { local csv="$DIR/$1.csv"; [[ -f "$csv" ]] || { echo ""; return; }
+      local maxel; maxel="$(awk -F, 'END{print $2+0}' "$csv")"
+      awk -F, -v thr="$((maxel - $2))" '
+        NR>1 && $2>=thr && $3!="" { n++; cs+=$3; fs+=$5; if($3>cmax)cmax=$3
+          rank["nominal"]=0;rank["fair"]=1;rank["serious"]=2;rank["critical"]=3
+          if(rank[$6]>wr){wr=rank[$6];ws=$6} }
+        END{ if(!n){print "";exit} printf "%.1f %d %.1f %s %d", cs/n, fs/n, cmax, (ws==""?"nominal":ws), n }' "$csv"; }
+
+    if [[ "$cmd" == report ]]; then
+      label="${1:?uso: fanwatch report <label> [--tail N]}"; shift; tail="$(opt --tail "$@")"; tail="${tail:-300}"
+      read -r ca ra cm ws n <<<"$(summarize "$label" "$tail")"; [[ -z "${ca:-}" ]] && { echo "sin datos estacionarios para '$label'"; exit 1; }
+      printf "%s%-12s%s últimos %ss n=%s  ·  CPU avg %s°C (max %s)  Fan avg %s RPM  peor thermal %s\n" "$B" "$label" "$Z" "$tail" "$n" "$ca" "$cm" "$ra" "$ws"
+    else
+      a="${1:?uso: fanwatch compare <a> <b> [--tail N]}"; b="${2:?}"; shift 2 || true; tail="$(opt --tail "$@")"; tail="${tail:-300}"
+      read -r ca ra cma wa na <<<"$(summarize "$a" "$tail")"; read -r cb rb cmb wb nb <<<"$(summarize "$b" "$tail")"
+      [[ -z "${ca:-}" || -z "${cb:-}" ]] && { echo "faltan datos en uno de los dos runs"; exit 1; }
+      printf "%sEstado estacionario (últimos %ss) — carga idéntica%s\n" "$B" "$tail" "$Z"
+      printf "  %-10s CPU %5s°C   Fan %5s RPM   peor thermal %s\n" "$a" "$ca" "$ra" "$wa"
+      printf "  %-10s CPU %5s°C   Fan %5s RPM   peor thermal %s\n" "$b" "$cb" "$rb" "$wb"
+      awk -v ca="$ca" -v cb="$cb" -v ra="$ra" -v rb="$rb" -v B="$b" 'BEGIN{
+        dt=cb-ca; dr=rb-ra; printf "  delta      CPU %+5.1f°C   Fan %+5.0f RPM\n\nLectura: ", dt, dr
+        if (dr>150 && dt<1.5 && dt>-1.5) printf "%s retiene calor — mismo °C pero el ventilador gira %.0f RPM más.\n", B, dr
+        else if (dt>1.5) printf "%s corre %.1f°C más caliente a RPM similar — retiene calor.\n", B, dt
+        else if (dr<-150) printf "%s va MÁS frío (%.0f RPM menos): revisa que el ambiente fuese el mismo.\n", B, -dr
+        else printf "sin efecto medible, dentro del ruido — la carcasa no atrapa calor.\n"
+        print "  (válido solo con misma carga y misma temperatura ambiente.)" }'
+    fi
+    ;;
+
+  tui)
+    interval="$(opt --interval "$@")"; interval="${interval:-3}"
+    export LC_ALL="${LC_ALL:-en_US.UTF-8}"   # so ${#s} counts characters, not bytes
+    INNER=48; BW=22
+    dash() { local n=$1; ((n<1)) && return; printf '─%.0s' $(seq 1 "$n"); }   # bash 3.2: avoid $s─ under set -u
+    vw()   { local n; n="$(printf '%s' "$1" | sed $'s/\e\\[[0-9;?]*[A-Za-z]//g' | tr -d '\n' | wc -m)"; printf '%s' "$((n))"; }
+    brow() { local p=$(( INNER - $(vw "$1") )); ((p<0)) && p=0
+             printf "  %s│%s %s%*s %s│%s\e[K\n" "$D" "$Z" "$1" "$p" "" "$D" "$Z"; }
+    rtop() { local lft="─ fanwatch · M4 Pro mini " rgt=" $1 ─" fill
+             fill=$(( INNER + 2 - $(vw "$lft") - $(vw "$rgt") )); ((fill<0)) && fill=0
+             printf "  %s┌%s%s%s┐%s\e[K\n" "$D" "$lft" "$(dash "$fill")" "$rgt" "$Z"; }
+    rbot() { local lft="─ q salir · alerta thermal fair/serious " fill
+             fill=$(( INNER + 2 - $(vw "$lft") )); ((fill<0)) && fill=0
+             printf "  %s└%s%s┘%s\e[K\n" "$D" "$lft" "$(dash "$fill")" "$Z"; }
+    printf '\e[2J\e[?25l'
+    trap 'printf "\e[?25h\e[J\n"; exit 0' INT TERM   # restore cursor AND exit the loop
+    trap 'printf "\e[?25h"' EXIT
+    rpmh=""; cpuh=""; pc=0; pg=0; pf=0   # strings, not arrays (bash 3.2 + set -u safe)
+    while :; do
+      c="$(cpu_c)"; [[ -n $c ]] && pc=$c || c=$pc
+      g="$(gpu_c)"; [[ -n $g ]] && pg=$g || g=$pg
+      f="$(fan_rpm)"; [[ -n $f ]] && pf=$f || f=$pf
+      t="$(thermal)"; l="$(level_of "$c" "$f" "$t")"; write_status "$c" "$g" "$f" "$t" "$l" tui
+      rpmh="$(printf '%s\n' $rpmh "$f" | tail -40 | tr '\n' ' ')"
+      cpuh="$(printf '%s\n' $cpuh "${c%.*}" | tail -40 | tr '\n' ' ')"
+      rs="$(sparkline 1000 "$FANMAX" $rpmh)"; cs="$(sparkline 60 110 $cpuh)"
+      tc=$G; [[ $t == fair ]] && tc=$Y; [[ $t == serious || $t == critical ]] && tc=$R
+      lcol="$(lvl_color "$l")"
+      cpu_l="$(printf 'CPU %5s°C  %s%s%s' "$c" "$R" "$(bar "${c%.*}" 40 110 $BW)" "$Z")"
+      fan_l="$(printf 'Fan %5s  %s%s%s /%s' "$f" "$Y" "$(bar "$f" 1000 "$FANMAX" $BW)" "$Z" "$FANMAX")"
+      gpu_l="$(printf 'GPU %5s°C  thermal %s%s%s   %s●%s %s%s%s' "$g" "$tc" "$t" "$Z" "$lcol" "$Z" "$lcol" "$l" "$Z")"
+      rpm_l="$(printf 'RPM %s%s%s' "$Y" "$rs" "$Z")"
+      cph_l="$(printf 'CPU %s%s%s' "$R" "$cs" "$Z")"
+      printf '\e[H'
+      rtop "$(date +%H:%M:%S)"
+      brow ""; brow "$cpu_l"; brow "$fan_l"; brow "$gpu_l"; brow ""
+      brow "$rpm_l"; brow "$cph_l"; brow ""
+      rbot
+      printf '\e[J'
+      if [[ -t 0 ]]; then read -rsn1 -t "$interval" k 2>/dev/null && [[ $k == q || $k == Q ]] && break
+      else sleep "$interval"; fi
+    done
+    ;;
+
+  watchdog-test)   # show exactly what an intervention WOULD do, with current readings — performs nothing
+    FANWATCH_DRYRUN=1
+    c="$(cpu_c)"; f="$(fan_rpm)"; t="$(thermal)"
+    printf "%sdry-run%s lecturas: cpu=%s°C fan=%srpm thermal=%s\n" "$B" "$Z" "$c" "$f" "$t"
+    echo "  armado: interrupt=$FANWATCH_INTERRUPT checkpoint=$FANWATCH_CHECKPOINT suspend=$FANWATCH_SUSPEND  confirm=${FANWATCH_CONFIRM} muestras"
+    intervene "$c" "$f" "$t"
+    echo "--- acciones que ejecutaría en un ALERT crítico sostenido ---"
+    tail -n 12 "$DIR/actions.log" 2>/dev/null | sed 's/^/  /'
+    ;;
+
+  list) ls -1 "$DIR"/*.csv 2>/dev/null | sed 's#.*/##; s#\.csv$##' || echo "(sin runs)";;
+  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//';;
+esac

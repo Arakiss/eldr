@@ -1,0 +1,12 @@
+# fanwatch watchdog — armed actions. Every action here is REVERSIBLE.
+# The guard never kills, never shuts down, never closes a session.
+# Interventions fire ONLY on sustained critical anomaly (thermal critical or fan
+# stopped) held for FANWATCH_CONFIRM consecutive samples — a single misread can't trip it.
+# Disable anything by setting it to 0. Audit with: fanwatch watchdog-test
+
+FANWATCH_CMUX=1          # passive alerts into cmux sessions (badge + notify)
+FANWATCH_INTERRUPT=1     # Escape to agent surfaces (pause generation; reversible)
+FANWATCH_CHECKPOINT=1    # git stash-create snapshot of dirty agent repos (non-destructive)
+FANWATCH_SUSPEND=1       # SIGSTOP top non-protected CPU hog (auto-SIGCONT on recovery)
+FANWATCH_CONFIRM=3       # consecutive critical samples (~90s at 30s interval) before acting
+FANWATCH_DRYRUN=0        # 1 = log intended actions, perform nothing

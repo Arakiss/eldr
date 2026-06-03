@@ -28,7 +28,7 @@ fn sigstop_is_reversed_by_unintervene() {
     // SAFETY: test-only env override read by eldr::config.
     unsafe { std::env::set_var("ELDR_DIR", dir) };
 
-    let child = Command::new("sleep").arg("60").spawn().expect("spawn sleep");
+    let mut child = Command::new("sleep").arg("60").spawn().expect("spawn sleep");
     let pid = child.id() as i32;
     std::thread::sleep(std::time::Duration::from_millis(150));
     assert!(!proc_state(pid).contains('T'), "child should start running");
@@ -50,6 +50,7 @@ fn sigstop_is_reversed_by_unintervene() {
     );
 
     unsafe { kill(pid, SIGKILL) };
+    let _ = child.wait(); // reap, no zombie
 }
 
 #[test]

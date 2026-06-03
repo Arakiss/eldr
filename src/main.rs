@@ -1,7 +1,7 @@
 //! `eldr` — thin binary. Hand-rolled arg parsing (no `clap`), then dispatch to the
 //! library. The library does the work; `main` only routes and sets exit codes.
 
-use eldr::daemon::{guard, launchd, watchdog};
+use eldr::daemon::{bench, guard, launchd, watchdog};
 use eldr::sensors::snapshot::Snapshot;
 use eldr::ui::{pretty, tui};
 
@@ -97,10 +97,32 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         "guard-install" => launchd::install(),
         "guard-uninstall" => launchd::uninstall(),
         "watchdog-test" => watchdog::test_report(),
-        // Wired in later milestones.
-        "bench" | "report" | "compare" => {
-            eprintln!("eldr: '{cmd}' not implemented yet (in progress)");
-            1
+        "bench" => {
+            let Some(label) = rest.iter().find(|a| !a.starts_with("--")) else {
+                eprintln!("usage: eldr bench <label> [--dur N --interval N --cmd \"...\"]");
+                return 2;
+            };
+            let dur = opt(rest, "--dur").and_then(|v| v.parse().ok()).unwrap_or(1200);
+            let interval = opt(rest, "--interval").and_then(|v| v.parse().ok()).unwrap_or(15);
+            let load = opt(rest, "--cmd");
+            bench::bench(label, dur, interval, load)
+        }
+        "report" => {
+            let Some(label) = rest.iter().find(|a| !a.starts_with("--")) else {
+                eprintln!("usage: eldr report <label> [--tail N]");
+                return 2;
+            };
+            let tail = opt(rest, "--tail").and_then(|v| v.parse().ok()).unwrap_or(300);
+            bench::report(label, tail)
+        }
+        "compare" => {
+            let labels: Vec<&String> = rest.iter().filter(|a| !a.starts_with("--")).collect();
+            if labels.len() < 2 {
+                eprintln!("usage: eldr compare <a> <b> [--tail N]");
+                return 2;
+            }
+            let tail = opt(rest, "--tail").and_then(|v| v.parse().ok()).unwrap_or(300);
+            bench::compare(labels[0], labels[1], tail)
         }
         other => {
             eprintln!("eldr: unknown command '{other}'\n");

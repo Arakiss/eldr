@@ -5,6 +5,7 @@
 //! - [`cmux`]    subprocess wrapper for cmux badges/notifications.
 //! - [`launchd`] guard-install / guard-uninstall.
 
+pub mod bench;
 pub mod cmux;
 pub mod guard;
 pub mod launchd;
