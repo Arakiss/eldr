@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img"
+     aria-label="eldr — fire on Apple Silicon. A zero-crate hardware monitor and protective watchdog.">
+  <defs>
+    <!-- charcoal backdrop -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e0f14"/>
+      <stop offset="1" stop-color="#0a0b0f"/>
+    </linearGradient>
+    <!-- ember glow rising from the flame base -->
+    <radialGradient id="ember" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff5a1f" stop-opacity="0.34"/>
+      <stop offset="0.55" stop-color="#c01f00" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#c01f00" stop-opacity="0"/>
+    </radialGradient>
+    <!-- fire gradient, deep ember at the base to pale amber at the tip -->
+    <linearGradient id="fire" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#6e1200"/>
+      <stop offset="0.42" stop-color="#e8430a"/>
+      <stop offset="0.74" stop-color="#ff8a1e"/>
+      <stop offset="1" stop-color="#ffd24a"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff7a1a"/>
+      <stop offset="1" stop-color="#ffe9a3"/>
+    </linearGradient>
+    <radialGradient id="hot" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff3c4" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#fff3c4" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e8430a"/>
+      <stop offset="1" stop-color="#ffb43c"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="360" fill="url(#bg)"/>
+  <!-- ember glow under the flame -->
+  <ellipse cx="150" cy="232" rx="240" ry="170" fill="url(#ember)"/>
+
+  <!-- Kenaz, the torch/fire rune, as a faint watermark behind the flame -->
+  <path d="M96 96 L150 188 L96 280" fill="none" stroke="#ff6a2c" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.08"/>
+
+  <!-- flame -->
+  <g>
+    <path d="M148 252 C112 250 92 214 106 178 C116 152 134 150 124 120
+             C120 104 128 92 150 86 C146 116 170 122 176 150
+             C184 184 198 200 186 228 C178 246 170 252 148 252 Z" fill="url(#fire)"/>
+    <path d="M148 250 C128 248 120 226 130 202 C137 185 148 180 145 158
+             C160 172 166 190 164 208 C162 228 162 244 148 250 Z" fill="url(#core)"/>
+    <ellipse cx="147" cy="214" rx="16" ry="30" fill="url(#hot)"/>
+    <!-- rising sparks -->
+    <circle cx="186" cy="120" r="2.4" fill="#ffb43c" opacity="0.85"/>
+    <circle cx="112" cy="138" r="1.8" fill="#ff8a1e" opacity="0.7"/>
+    <circle cx="170" cy="78"  r="1.6" fill="#ffd24a" opacity="0.8"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="232" y="206" font-family="'Inter','Helvetica Neue',Arial,sans-serif"
+        font-size="148" font-weight="800" letter-spacing="-6" fill="#f6efe6">eldr</text>
+  <!-- taglines -->
+  <text x="238" y="252" font-family="'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace"
+        font-size="20" fill="#9a8f84">monitor + watchdog<tspan fill="#5f5a53"> · </tspan>no sudo</text>
+  <text x="238" y="284" font-family="'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace"
+        font-size="20" fill="#9a8f84">zero crates<tspan fill="#5f5a53"> · </tspan>hand-written FFI</text>
+
+  <!-- terminal panel -->
+  <g>
+    <rect x="606" y="74" width="548" height="212" rx="14" fill="#101117" stroke="#3a2418" stroke-width="1"/>
+    <rect x="606" y="74" width="548" height="34" rx="14" fill="#15161d"/>
+    <rect x="606" y="98" width="548" height="10" fill="#15161d"/>
+    <!-- chrome dots -->
+    <circle cx="630" cy="91" r="5" fill="#ff5f56"/>
+    <circle cx="650" cy="91" r="5" fill="#ffbd2e"/>
+    <circle cx="670" cy="91" r="5" fill="#27c93f"/>
+    <text x="1130" y="95" text-anchor="end"
+          font-family="'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace"
+          font-size="13" fill="#6b6760">eldr guard · live</text>
+
+    <!-- readout -->
+    <g font-family="'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace" font-size="18">
+      <!-- L1 chip -->
+      <text x="630" y="146" fill="#d8d2c8"><tspan fill="#f6efe6" font-weight="700">Apple M4 Pro</tspan>  ·  Mac16,11 · 8P+4E</text>
+      <circle cx="1092" cy="140" r="4.5" fill="#27c93f"/>
+      <text x="1104" y="146" fill="#7fd49a">OK</text>
+      <!-- L2 cpu + sparkline -->
+      <text x="630" y="180" fill="#b06a3a">CPU<tspan fill="#d8d2c8" dx="14">P 4512 · E 1991 MHz   44% load</tspan></text>
+      <g>
+        <rect x="1010" y="160" width="8" height="14" rx="2" fill="url(#bar)"/>
+        <rect x="1022" y="162" width="8" height="12" rx="2" fill="url(#bar)"/>
+        <rect x="1034" y="166" width="8" height="8"  rx="2" fill="url(#bar)"/>
+        <rect x="1046" y="158" width="8" height="16" rx="2" fill="url(#bar)"/>
+        <rect x="1058" y="152" width="8" height="22" rx="2" fill="url(#bar)"/>
+        <rect x="1070" y="156" width="8" height="18" rx="2" fill="url(#bar)"/>
+        <rect x="1082" y="148" width="8" height="26" rx="2" fill="url(#bar)"/>
+        <rect x="1094" y="150" width="8" height="24" rx="2" fill="url(#bar)"/>
+        <rect x="1106" y="146" width="8" height="28" rx="2" fill="url(#bar)"/>
+        <rect x="1118" y="154" width="8" height="20" rx="2" fill="url(#bar)"/>
+      </g>
+      <!-- L3 power -->
+      <text x="630" y="214" fill="#b06a3a">PWR<tspan fill="#d8d2c8" dx="14">CPU 13.5 · GPU 0.1 · pkg 13.7 W</tspan></text>
+      <!-- L4 temps -->
+      <text x="630" y="248" fill="#b06a3a">TMP<tspan fill="#d8d2c8" dx="14">CPU </tspan><tspan fill="#ff8a3c" font-weight="700">88°</tspan><tspan fill="#d8d2c8"> · GPU 78°   fan 1763 rpm</tspan></text>
+      <!-- L5 ram bar -->
+      <text x="630" y="278" fill="#b06a3a">RAM<tspan fill="#d8d2c8" dx="14">41.3 / 48.0 GiB</tspan></text>
+      <rect x="980" y="266" width="150" height="12" rx="6" fill="#26211c"/>
+      <rect x="980" y="266" width="129" height="12" rx="6" fill="url(#bar)"/>
+    </g>
+  </g>
+</svg>

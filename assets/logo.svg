@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img"
+     aria-label="eldr logo — a flame over the Norse Kenaz rune (torch / fire)">
+  <defs>
+    <linearGradient id="sq" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16171e"/>
+      <stop offset="1" stop-color="#090a0e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.62" r="0.5">
+      <stop offset="0" stop-color="#ff5a1f" stop-opacity="0.36"/>
+      <stop offset="0.6" stop-color="#c01f00" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#c01f00" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fire" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#6e1200"/>
+      <stop offset="0.42" stop-color="#e8430a"/>
+      <stop offset="0.74" stop-color="#ff8a1e"/>
+      <stop offset="1" stop-color="#ffd24a"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff7a1a"/>
+      <stop offset="1" stop-color="#ffe9a3"/>
+    </linearGradient>
+    <radialGradient id="hot" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff3c4" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#fff3c4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#sq)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="#3a2418" stroke-width="2"/>
+  <ellipse cx="256" cy="320" rx="210" ry="190" fill="url(#glow)"/>
+
+  <!-- flame -->
+  <path d="M256 392 C198 388 168 330 192 272 C210 228 232 224 218 176
+           C212 150 226 128 258 120 C252 168 286 178 294 222
+           C306 272 326 300 308 346 C296 380 286 392 256 392 Z" fill="url(#fire)"/>
+  <path d="M256 388 C220 384 204 344 220 304 C230 278 248 272 244 240
+           C268 258 280 286 278 316 C276 352 276 376 256 388 Z" fill="url(#core)"/>
+  <ellipse cx="254" cy="330" rx="22" ry="40" fill="url(#hot)"/>
+
+  <!-- sparks -->
+  <circle cx="300" cy="190" r="4"   fill="#ffb43c" opacity="0.85"/>
+  <circle cx="206" cy="214" r="3"   fill="#ff8a1e" opacity="0.7"/>
+  <circle cx="284" cy="134" r="2.6" fill="#ffd24a" opacity="0.85"/>
+</svg>

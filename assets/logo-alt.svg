@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img"
+     aria-label="eldr logo (alt) — a faceted crystal holding fire, a heart of flame">
+  <defs>
+    <linearGradient id="sq2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16171e"/>
+      <stop offset="1" stop-color="#090a0e"/>
+    </linearGradient>
+    <radialGradient id="emberCore" cx="0.5" cy="0.52" r="0.5">
+      <stop offset="0" stop-color="#ffe9a3"/>
+      <stop offset="0.28" stop-color="#ff8a1e"/>
+      <stop offset="0.6" stop-color="#e8430a"/>
+      <stop offset="1" stop-color="#6e1200"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff5a1f" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#ff5a1f" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="gem">
+      <polygon points="256,116 344,224 316,320 256,404 196,320 168,224"/>
+    </clipPath>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#sq2)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="#28323e" stroke-width="2"/>
+  <ellipse cx="256" cy="262" rx="180" ry="180" fill="url(#halo)"/>
+
+  <!-- cool faceted shell -->
+  <g stroke="#46586a" stroke-width="2" stroke-linejoin="round">
+    <polygon points="256,116 168,224 256,236" fill="#202d3a"/>
+    <polygon points="256,116 344,224 256,236" fill="#1a2531"/>
+    <polygon points="168,224 196,320 256,236" fill="#16212c"/>
+    <polygon points="344,224 316,320 256,236" fill="#1e2a37"/>
+    <polygon points="196,320 256,404 256,236" fill="#202d3a"/>
+    <polygon points="316,320 256,404 256,236" fill="#16212c"/>
+  </g>
+
+  <!-- fire heart, clipped to the gem so it glows from within -->
+  <g clip-path="url(#gem)">
+    <ellipse cx="256" cy="252" rx="86" ry="104" fill="url(#emberCore)"/>
+    <ellipse cx="256" cy="248" rx="40" ry="52" fill="#fff3c4" opacity="0.55"/>
+  </g>
+
+  <!-- bright facet edges where the fire leaks through -->
+  <g stroke="#ffb43c" stroke-width="2.4" stroke-linecap="round" opacity="0.85" fill="none">
+    <path d="M256 236 L256 116"/>
+    <path d="M256 236 L196 320"/>
+    <path d="M256 236 L316 320"/>
+  </g>
+  <polygon points="256,116 344,224 316,320 256,404 196,320 168,224"
+           fill="none" stroke="#ffd24a" stroke-width="2.5" opacity="0.5"/>
+</svg>
