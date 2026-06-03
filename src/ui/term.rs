@@ -20,6 +20,8 @@ const VTIME: usize = 17;
 const TCSANOW: c_int = 0;
 const NCCS: usize = 20;
 const POLLIN: i16 = 0x0001;
+// macOS `_IOR('t', 104, struct winsize)`.
+const TIOCGWINSZ: u64 = 0x4008_7468;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -40,11 +42,20 @@ struct Pollfd {
     revents: i16,
 }
 
+#[repr(C)]
+struct Winsize {
+    row: u16,
+    col: u16,
+    xpixel: u16,
+    ypixel: u16,
+}
+
 unsafe extern "C" {
     fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, termios: *const Termios) -> c_int;
     fn poll(fds: *mut Pollfd, nfds: u32, timeout: c_int) -> c_int;
     fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
+    fn ioctl(fd: c_int, request: u64, arg: *mut Winsize) -> c_int;
 }
 
 /// RAII raw-mode guard. Enter switches to raw mode + alternate screen + hidden
@@ -104,6 +115,23 @@ pub fn read_key(timeout_ms: i32) -> Option<u8> {
     let mut byte = 0u8;
     let n = unsafe { read(0, &mut byte, 1) };
     if n == 1 { Some(byte) } else { None }
+}
+
+/// Terminal size as `(cols, rows)`. Falls back to `(80, 24)` when stdout is not a
+/// tty (pipes, tests) or the ioctl fails.
+pub fn size() -> (u16, u16) {
+    let mut ws = Winsize {
+        row: 0,
+        col: 0,
+        xpixel: 0,
+        ypixel: 0,
+    };
+    let rc = unsafe { ioctl(1, TIOCGWINSZ, &mut ws) };
+    if rc == 0 && ws.col > 0 && ws.row > 0 {
+        (ws.col, ws.row)
+    } else {
+        (80, 24)
+    }
 }
 
 /// Move the cursor home (top-left) without clearing — frames overwrite in place.
