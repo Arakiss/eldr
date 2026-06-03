@@ -38,6 +38,7 @@ app: release
 	install -m 0755 $(BIN) "$(APPDIR)/Contents/MacOS/eldr"
 	install -m 0644 $(ICNS) "$(APPDIR)/Contents/Resources/eldr.icns"
 	@printf 'APPL????' > "$(APPDIR)/Contents/PkgInfo"
+	@codesign --force --deep --sign - "$(APPDIR)" && echo "ad-hoc signed ($(shell /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' packaging/Info.plist))"
 	@touch "$(APPDIR)"
 	@echo "built -> $(APPDIR)"
 
