@@ -19,6 +19,7 @@
 //! - [`config`]  `~/.config/eldr/config.toml` read as simple KEY=value.
 
 pub mod config;
+pub mod daemon;
 pub mod ffi;
 pub mod sensors;
 pub mod ui;

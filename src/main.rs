@@ -1,6 +1,7 @@
 //! `eldr` — thin binary. Hand-rolled arg parsing (no `clap`), then dispatch to the
 //! library. The library does the work; `main` only routes and sets exit codes.
 
+use eldr::daemon::{guard, launchd};
 use eldr::sensors::snapshot::Snapshot;
 use eldr::ui::{pretty, tui};
 
@@ -81,9 +82,22 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             println!("{USAGE}");
             0
         }
+        "guard" => {
+            let secs = opt(rest, "--interval").and_then(|v| v.parse::<u64>().ok()).unwrap_or(30);
+            guard::run(secs)
+        }
+        "guard-stop" => {
+            if guard::stop() {
+                println!("eldr guard stopped");
+            } else {
+                println!("no guard was running");
+            }
+            0
+        }
+        "guard-install" => launchd::install(),
+        "guard-uninstall" => launchd::uninstall(),
         // Wired in later milestones.
-        "guard" | "guard-stop" | "guard-install" | "guard-uninstall" | "watchdog-test"
-        | "bench" | "report" | "compare" => {
+        "watchdog-test" | "bench" | "report" | "compare" => {
             eprintln!("eldr: '{cmd}' not implemented yet (in progress)");
             1
         }
