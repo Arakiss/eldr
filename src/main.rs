@@ -3,6 +3,7 @@
 
 use eldr::daemon::{bench, guard, launchd, watchdog};
 use eldr::sensors::snapshot::Snapshot;
+use eldr::sensors::system::SystemInfo;
 use eldr::ui::{pretty, tui};
 
 /// Default IOReport sampling window for one-shot readings (`now`/`status`/`check`).
@@ -19,6 +20,7 @@ READINGS
     check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
     status                  panel (live, or last guard sample)
     tui [--interval N]      live self-refreshing dashboard
+    system                  static machine identity (model, serial, macOS, SSD)
 
 GUARD
     guard [--interval N]    background monitor -> status.json, alerts, interventions
@@ -66,6 +68,10 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             let _ = snap.write_status();
             pretty::panel(&snap, "(live)");
+            0
+        }
+        "system" => {
+            SystemInfo::get().render();
             0
         }
         "status" => {
