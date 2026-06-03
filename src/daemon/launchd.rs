@@ -47,15 +47,29 @@ fn render_plist(exe: &str, interval: u32, dir: &str, log: &str) -> String {
     )
 }
 
+/// The executable launchd should run. Prefer the app-bundle binary so the guard is
+/// attributed to `Eldr.app` in Login Items (its icon + name); fall back to our own path.
+fn guard_exe() -> Option<String> {
+    let app =
+        std::path::PathBuf::from(config::home()).join("Applications/Eldr.app/Contents/MacOS/eldr");
+    if app.exists() {
+        return Some(app.to_string_lossy().into_owned());
+    }
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Install + start the guard LaunchAgent.
 pub fn install() -> i32 {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p.to_string_lossy().into_owned(),
-        Err(e) => {
-            eprintln!("eldr: cannot resolve own path: {e}");
+    let exe = match guard_exe() {
+        Some(p) => p,
+        None => {
+            eprintln!("eldr: cannot resolve guard executable");
             return 1;
         }
     };
+    let via_bundle = exe.contains("Eldr.app");
     let dir = config::ensure_data_dir();
     let log = dir.join("guard.log");
     let plist = plist_path();
@@ -90,6 +104,9 @@ pub fn install() -> i32 {
     }
 
     println!("eldr guard installed as LaunchAgent ({LABEL}) — starts at login, restarts on crash.");
+    if via_bundle {
+        println!("  running via Eldr.app — shows the eldr icon in Login Items.");
+    }
     println!(
         "  stop for real: eldr guard-uninstall   ·   log: {}",
         log.display()

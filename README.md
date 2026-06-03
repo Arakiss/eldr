@@ -63,10 +63,12 @@ The IOReport/IOHID/SMC FFI was reimplemented from [macmon](https://github.com/vl
 ## Install
 
 ```sh
-make install          # builds release, copies to ~/.local/bin/eldr
+make install          # builds release, installs the CLI to ~/.local/bin, and builds Eldr.app
 ```
 
 Requires a recent Rust toolchain (edition 2024, rustc 1.85+) and an Apple Silicon Mac.
+`make install` also assembles `~/Applications/Eldr.app`, the bundle the guard daemon runs
+from — so it appears with the eldr icon under *System Settings → Login Items*.
 
 ## Commands
 
@@ -98,7 +100,8 @@ eldr guard-uninstall    # stops and removes it
 ```
 
 `guard-install` registers a per-user LaunchAgent with `RunAtLoad` + `KeepAlive`: it
-starts at login, restarts on crash, and refreshes `status.json` every 30s. Nothing needs
+starts at login, restarts on crash, and refreshes `status.json` every 30s. It runs from
+`Eldr.app` when present, so the guard shows the eldr icon in Login Items. Nothing needs
 `sudo`, and the agent runs entirely inside your own user session.
 
 ## The watchdog
