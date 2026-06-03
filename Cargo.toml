@@ -1,0 +1,30 @@
+[package]
+name = "eldr"
+version = "0.1.0"
+edition = "2024"
+description = "Eldr — global hardware monitor and protective watchdog for Apple Silicon. No sudo, zero crates."
+authors = ["Petru Arakiss"]
+license = "MIT"
+repository = "https://github.com/Arakiss/eldr"
+readme = "README.md"
+keywords = ["macos", "apple-silicon", "monitoring", "thermal", "watchdog"]
+categories = ["command-line-utilities", "hardware-support"]
+
+[[bin]]
+name = "eldr"
+path = "src/main.rs"
+
+[lib]
+name = "eldr"
+path = "src/lib.rs"
+
+# Dependency policy: ZERO external crates. Everything is std + hand-written FFI.
+# Do not add anything under [dependencies]. See README "Why zero crates".
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
