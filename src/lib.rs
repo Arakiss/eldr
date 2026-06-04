@@ -18,6 +18,15 @@
 //! - [`ui`]      text (`now`/`status`/`check`) and the owned TUI engine.
 //! - [`config`]  `~/.config/eldr/config.toml` read as simple KEY=value.
 
+// Every reading comes from hand-written FFI over macOS-private frameworks
+// (IOReport / IOKit / IOHID / AppleSMC) that exist only on Apple Silicon. Fail with a
+// clear message rather than a wall of missing-symbol linker errors on any other target.
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+compile_error!(
+    "eldr only supports Apple Silicon macOS (aarch64-apple-darwin). Its readings come \
+     from hand-written FFI over macOS-private frameworks that exist only there."
+);
+
 pub mod config;
 pub mod daemon;
 pub mod ffi;
