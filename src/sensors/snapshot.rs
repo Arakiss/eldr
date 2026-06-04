@@ -144,6 +144,9 @@ pub struct Snapshot {
     pub fan_rpm: u32,
     pub fan_min: u32,
     pub fan_max: u32,
+    /// RPM the macOS thermal controller is commanding (`F0Tg`). Zero when the system
+    /// wants no airflow — the normal idle state on Apple Silicon, where fans fully stop.
+    pub fan_target: u32,
 
     // thermal pressure
     pub thermal: Thermal,
@@ -228,6 +231,7 @@ impl Snapshot {
         s.fan_rpm = smc.fan_rpm;
         s.fan_min = smc.fan_min;
         s.fan_max = smc.fan_max;
+        s.fan_target = smc.fan_target;
 
         // Temps: SMC (Tp/Te/Tg) on macOS 14+, IOHID fallback for older Macs.
         if smc.has_temps {
@@ -255,21 +259,33 @@ impl Snapshot {
     }
 
     /// Health verdict. Gate ONLY on macOS thermal pressure (the clean throttle
-    /// signal) plus a stopped fan — the same discipline as the bash prototype. Die
-    /// temperature reads high on healthy hardware, so it informs but never triggers.
+    /// signal) plus a genuinely failed fan — the same discipline as the bash prototype.
+    /// Die temperature reads high on healthy hardware, so it informs but never triggers.
     pub fn compute_level(&self) -> Level {
         let mut lvl = match self.thermal {
             Thermal::Serious | Thermal::Critical => Level::Alert,
             Thermal::Fair => Level::Warn,
             _ => Level::Ok,
         };
-        // A stopped/failed fan is danger regardless of thermal — but only trust it
-        // when the SMC actually reported a fan envelope (avoids false alarms when SMC
-        // is unavailable and everything reads zero).
-        if self.fan_max > 0 && self.fan_rpm < 500 {
+        // A failed fan is danger regardless of thermal pressure.
+        if self.fan_failed() {
             lvl = Level::Alert;
         }
         lvl
+    }
+
+    /// True when the cooling controller is COMMANDING airflow (`fan_target` up) but the
+    /// fan isn't spinning — a genuinely failed or blocked fan.
+    ///
+    /// Crucially this is NOT "the fan reads zero". Apple Silicon stops its fans entirely
+    /// when the machine is cool (passive cooling), so 0 RPM at idle is normal, not a
+    /// fault — flagging it produced false `ALERT`s on a perfectly healthy, cold Mac.
+    /// Gating on a non-zero commanded target (and requiring a real SMC envelope, so a
+    /// missing SMC reading zero everywhere can't false-alarm) keeps the genuine
+    /// failure — a dead fan while the system is calling for cooling — while staying
+    /// quiet at idle.
+    pub fn fan_failed(&self) -> bool {
+        self.fan_max > 0 && self.fan_target >= 500 && self.fan_rpm < 500
     }
 
     /// Plain-language memory pressure from how much is reclaimable (free + cache),
@@ -347,6 +363,7 @@ impl Snapshot {
         o.u("fan_rpm", self.fan_rpm as u64);
         o.u("fan_min", self.fan_min as u64);
         o.u("fan_max", self.fan_max as u64);
+        o.u("fan_target", self.fan_target as u64);
         o.s("thermal", self.thermal.as_str());
 
         o.u("uptime_secs", self.uptime_secs);
@@ -519,12 +536,37 @@ mod tests {
         s.thermal = Thermal::Nominal;
         s.cpu_temp = 99.0;
         assert_eq!(s.compute_level(), Level::Ok);
-        // Stopped fan is danger regardless of thermal.
+        // A stopped fan at idle (no airflow commanded) is normal on Apple Silicon —
+        // it must NOT trip an alert.
         s.fan_rpm = 0;
+        s.fan_target = 0;
+        assert_eq!(s.compute_level(), Level::Ok);
+        // ...but a stalled fan WHILE the controller is commanding airflow is danger.
+        s.fan_target = 2000;
         assert_eq!(s.compute_level(), Level::Alert);
-        // ...but a zero fan with no SMC envelope must not false-alarm.
+        // ...and a zero fan with no SMC envelope must not false-alarm.
         s.fan_max = 0;
         assert_eq!(s.compute_level(), Level::Ok);
+    }
+
+    #[test]
+    fn fan_failed_needs_commanded_airflow() {
+        let mut s = Snapshot::default();
+        s.fan_max = 7826;
+        // Cool Mac: controller commands nothing, fan legitimately stopped.
+        s.fan_target = 0;
+        s.fan_rpm = 0;
+        assert!(!s.fan_failed());
+        // Under load: airflow commanded and the fan is spinning — healthy.
+        s.fan_target = 2317;
+        s.fan_rpm = 2300;
+        assert!(!s.fan_failed());
+        // Airflow commanded but the fan is dead — the genuine failure.
+        s.fan_rpm = 0;
+        assert!(s.fan_failed());
+        // No SMC envelope at all: never a failure, even with a stale target.
+        s.fan_max = 0;
+        assert!(!s.fan_failed());
     }
 
     #[test]

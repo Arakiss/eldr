@@ -1,5 +1,6 @@
 //! AppleSMC over IOKit, hand-written (reimplemented from macmon, MIT). Eldr uses it
-//! for fan telemetry: current RPM (`F0Ac`) and the min/max envelope (`F0Mn`/`F0Mx`).
+//! for fan telemetry: current RPM (`F0Ac`), the controller's commanded target (`F0Tg`)
+//! and the min/max envelope (`F0Mn`/`F0Mx`).
 //! Sensor keys on Apple Silicon are 4-byte floats (`flt `).
 
 use crate::ffi::iokit::IOServiceIterator;
@@ -357,6 +358,10 @@ pub struct SmcReadout {
     pub fan_rpm: u32,
     pub fan_min: u32,
     pub fan_max: u32,
+    /// Commanded target RPM (`F0Tg`). On Apple Silicon the controller drives this to 0
+    /// when the machine is cool — the fan then legitimately stops. A non-zero target
+    /// with a stalled `fan_rpm` is the real "fan failed" signal.
+    pub fan_target: u32,
     /// System total power in Watts (`PSTR`), or `None` if the key is absent.
     pub sys_power: Option<f32>,
     pub cpu_temp: f32,
@@ -374,12 +379,14 @@ pub fn read() -> SmcReadout {
     let rpm = smc.read_f32("F0Ac").unwrap_or(0.0);
     let min = smc.read_f32("F0Mn").unwrap_or(0.0);
     let max = smc.read_f32("F0Mx").unwrap_or(0.0);
+    let target = smc.read_f32("F0Tg").unwrap_or(0.0);
     let sys_power = smc.read_f32("PSTR").filter(|p| p.is_finite() && *p > 0.0);
     let (cpu_temp, gpu_temp) = smc.temp_avgs();
     SmcReadout {
         fan_rpm: rpm as u32,
         fan_min: min as u32,
         fan_max: max as u32,
+        fan_target: target as u32,
         sys_power,
         cpu_temp,
         gpu_temp,

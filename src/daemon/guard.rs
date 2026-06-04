@@ -223,8 +223,9 @@ pub fn stop() -> bool {
     }
 }
 
-/// Mark the watchdog thermal pressure as the danger signal for sustained-critical
-/// counting (used by the M5 watchdog). Kept here so guard + watchdog agree.
+/// The danger signal for sustained-critical counting (used by the M5 watchdog): macOS
+/// thermal pressure at its peak, or a genuinely failed fan. A fan stopped at idle is
+/// normal on Apple Silicon and must NOT arm interventions — see [`Snapshot::fan_failed`].
 pub fn is_critical(s: &Snapshot) -> bool {
-    s.thermal == Thermal::Critical || (s.fan_max > 0 && s.fan_rpm < 500)
+    s.thermal == Thermal::Critical || s.fan_failed()
 }

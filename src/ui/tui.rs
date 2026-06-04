@@ -286,10 +286,10 @@ fn pressure_color(st: &Style, p: &str) -> &'static str {
     }
 }
 fn human_status(s: &Snapshot) -> (&'static str, &'static str) {
-    if s.fan_max > 0 && s.fan_rpm < 500 {
+    if s.fan_failed() {
         return (
             "Check the fan",
-            "The fan reads stopped — that's worth a look.",
+            "Cooling is calling for the fan, but it reads stopped.",
         );
     }
     match s.thermal {
@@ -790,8 +790,7 @@ fn body_energy(
         ),
         f,
     );
-    let fan_stopped = s.fan_max > 0 && s.fan_rpm < 500;
-    let fc = if fan_stopped { st.red } else { z };
+    let fc = if s.fan_failed() { st.red } else { z };
     let pct = if s.fan_max > s.fan_min {
         (s.fan_rpm.saturating_sub(s.fan_min)) as f64 / (s.fan_max - s.fan_min) as f64 * 100.0
     } else {
