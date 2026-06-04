@@ -1,6 +1,6 @@
-//! IOReport — the private power/performance telemetry framework. Hand-written FFI,
-//! reimplemented from macmon's proven map (MIT). This is the heart of Eldr's no-sudo
-//! readings: package/CPU/GPU/ANE power and per-cluster frequency residencies.
+//! IOReport — the private power/performance telemetry framework. Hand-written FFI
+//! over a proven channel/key map (provenance in NOTICE). This is the heart of Eldr's
+//! no-sudo readings: package/CPU/GPU/ANE power and per-cluster frequency residencies.
 //!
 //! Flow: build a subscription over channel groups -> sample t0, sleep, sample t1 ->
 //! delta -> iterate channels, reading integer values (energy in mJ over the window)

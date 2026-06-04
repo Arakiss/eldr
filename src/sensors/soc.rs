@@ -3,7 +3,7 @@
 //! - Identity (chip, model, P/E cores) from sysctl.
 //! - Frequency tables (MHz) from the IORegistry `pmgr` voltage-states.
 //! - [`SocSampler`] turns one IOReport delta into power (CPU/GPU/ANE/DRAM) and
-//!   per-cluster active frequencies. Reimplemented from macmon (MIT).
+//!   per-cluster active frequencies. Hand-written FFI (provenance in NOTICE).
 
 use crate::ffi::cf::{
     CFDataRef, CFDictionaryRef, CFNumberRef, CFRelease, cfdata_bytes, cfdict_get_val, cfnum_i64,
@@ -234,7 +234,7 @@ impl SocSampler {
     }
 }
 
-// MARK: frequency math (ported from macmon metrics.rs)
+// MARK: frequency math
 
 fn zero_div(a: f64, b: f64) -> f64 {
     if b == 0.0 { 0.0 } else { a / b }

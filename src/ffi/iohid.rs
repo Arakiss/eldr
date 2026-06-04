@@ -1,6 +1,6 @@
-//! IOHID temperature sensors (reimplemented from macmon, MIT, via freedomtan's
-//! `sensors`). Reads AppleVendor temperature sensors with no sudo. CPU temp is the
-//! mean of the `pACC`/`eACC MTR` sensors; GPU temp the mean of `GPU MTR` sensors.
+//! IOHID temperature sensors, hand-written FFI (provenance in NOTICE). Reads
+//! AppleVendor temperature sensors with no sudo. CPU temp is the mean of the
+//! `pACC`/`eACC MTR` sensors; GPU temp the mean of `GPU MTR` sensors.
 
 use crate::ffi::cf::{CFAllocatorRef, CFTypeRef};
 use crate::ffi::cf::{

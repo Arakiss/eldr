@@ -2,8 +2,8 @@
 //
 // Eldr links macOS system frameworks (CoreFoundation, IOKit, Foundation) and the
 // PRIVATE IOReport framework. The actual linkage is declared with `#[link(...)]`
-// attributes on the `extern "C"` blocks in `src/ffi/*` (same approach as macmon),
-// so this script only makes the private-framework directory discoverable as a
+// attributes on the `extern "C"` blocks in `src/ffi/*`, so this script only
+// makes the private-framework directory discoverable as a
 // belt-and-suspenders fallback for the linker. On modern macOS the linker resolves
 // these from the dyld shared cache even though the files are not present on disk.
 fn main() {

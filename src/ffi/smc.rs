@@ -1,4 +1,4 @@
-//! AppleSMC over IOKit, hand-written (reimplemented from macmon, MIT). Eldr uses it
+//! AppleSMC over IOKit, hand-written FFI (provenance in NOTICE). Eldr uses it
 //! for fan telemetry: current RPM (`F0Ac`), the controller's commanded target (`F0Tg`)
 //! and the min/max envelope (`F0Mn`/`F0Mx`).
 //! Sensor keys on Apple Silicon are 4-byte floats (`flt `).

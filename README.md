@@ -32,11 +32,10 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.1.0`). Every reading above is verified against
-> [macmon](https://github.com/vladkens/macmon) on an M4 Pro — frequency tables are
-> byte-exact, live power/temps near-identical. It is a personal tool first; treat it as
-> beta, and keep the watchdog's reversible actions disabled until you trust them on your
-> own machine.
+> **Status:** early but real (`v0.1.0`). Every reading above is cross-checked against an
+> independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
+> power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
+> watchdog's reversible actions disabled until you trust them on your own machine.
 
 ## Why zero crates
 
@@ -46,7 +45,8 @@ one package: `eldr`. No `sysinfo`, `ratatui`, `clap`, `serde`, `chrono`, `libc`,
 `core-foundation`. The data sources, the JSON emitter, the arg parser, the TUI engine
 and the config reader are all hand-rolled. CI re-checks the invariant on every push.
 
-The readings come from the same no-sudo path Apple's own tools use:
+The readings come from the same no-sudo path Apple's own tools use, through bindings
+eldr writes itself (FFI provenance and acknowledgements in [NOTICE](NOTICE)):
 
 - **IOReport** (private framework) for package/CPU/GPU/ANE power and per-cluster
   frequency residencies.
@@ -57,8 +57,9 @@ The readings come from the same no-sudo path Apple's own tools use:
 - **NSProcessInfo** thermal state via the bare Objective-C runtime — the clean throttle
   signal the watchdog gates on.
 
-The IOReport/IOHID/SMC FFI was reimplemented from [macmon](https://github.com/vladkens/macmon)
-(MIT) as a reference; eldr declares its own bindings and does not depend on it.
+The IOReport/IOHID/SMC FFI is hand-written from Apple's framework interfaces: eldr
+declares every binding itself and depends on nothing. Reference material studied while
+re-deriving it is acknowledged in [NOTICE](NOTICE).
 
 ## Install
 

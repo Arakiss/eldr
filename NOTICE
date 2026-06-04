@@ -1,0 +1,23 @@
+eldr — NOTICE
+
+Third-party provenance and acknowledgements.
+
+eldr has zero build or runtime dependencies: `Cargo.lock` contains exactly one
+package (eldr), and every OS binding is hand-written `extern "C"` FFI declared by
+eldr itself. The projects below were studied as references while re-deriving that
+FFI from Apple's framework interfaces. None of them is linked, vendored, or
+otherwise depended on.
+
+FFI provenance
+--------------
+macmon — https://github.com/vladkens/macmon
+  Copyright (c) vladkens. Licensed under the MIT License.
+  Reference for the IOReport key map (package/CPU/GPU/ANE power, per-cluster
+  frequency residencies), the AppleSMC access pattern (fan + temperature keys),
+  and the host/mach memory accounting.
+
+freedomtan/sensors — https://github.com/freedomtan/sensors
+  Reference for reading AppleVendor IOHID temperature sensors without sudo.
+
+These acknowledgements concern reference material only and do not alter eldr's
+own license (MIT — see LICENSE).

@@ -166,9 +166,9 @@ pub fn page_size() -> u64 {
     sysctl_u64("hw.pagesize").unwrap_or(16384)
 }
 
-/// Used RAM in bytes, matching macmon's accounting (so `eldr now` agrees with
-/// `macmon pipe`): active + inactive + wired + speculative + compressed, minus
-/// purgeable and file-backed (external) pages.
+/// Used RAM in bytes, matching the reference accounting (provenance in NOTICE):
+/// active + inactive + wired + speculative + compressed, minus purgeable and
+/// file-backed (external) pages.
 pub fn ram_used() -> u64 {
     let mut stats = VmStatistics64::default();
     let mut count = (size_of::<VmStatistics64>() / size_of::<c_int>()) as u32;
