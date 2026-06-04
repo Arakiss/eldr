@@ -32,7 +32,7 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.1.0`). Every reading above is cross-checked against an
+> **Status:** early but real (`v0.2.0`). Every reading above is cross-checked against an
 > independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
