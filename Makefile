@@ -5,7 +5,7 @@ BIN    := target/release/eldr
 APPDIR := $(HOME)/Applications/Eldr.app
 ICNS   := assets/eldr.icns
 
-.PHONY: all build release test check clippy install uninstall app guard-install guard-uninstall clean fmt
+.PHONY: all build release test check clippy install install-cli uninstall app guard-install guard-uninstall clean fmt
 
 all: release
 
@@ -42,9 +42,19 @@ app: release
 	@touch "$(APPDIR)"
 	@echo "built -> $(APPDIR)"
 
-install: release app
+# Install just the CLI to $(BINDIR) — no Eldr.app bundle (the guard daemon needs the
+# bundle; one-off CLI use does not). Warns if $(BINDIR) isn't on PATH.
+install-cli: release
 	@mkdir -p $(BINDIR)
 	install -m 0755 $(BIN) $(BINDIR)/eldr
+	@echo "installed -> $(BINDIR)/eldr"
+	@case ":$$PATH:" in \
+	  *":$(BINDIR):"*) ;; \
+	  *) printf 'note: %s is not on your PATH. Add it, e.g.:\n      export PATH="%s:$$PATH"\n' "$(BINDIR)" "$(BINDIR)" ;; \
+	esac
+
+# Install the CLI and assemble Eldr.app (the bundle the guard daemon runs from).
+install: install-cli app
 	@echo "installed -> $(BINDIR)/eldr  and  $(APPDIR)"
 
 uninstall:
