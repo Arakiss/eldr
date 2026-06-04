@@ -35,7 +35,8 @@ EXPERIMENT
     report <label>          steady-state summary
     compare <a> <b>         iso-load delta + verdict
 
-    -h, --help              this help";
+    -h, --help              this help
+    -V, --version           print version";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -93,6 +94,10 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         }
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
+            0
+        }
+        "-V" | "--version" | "version" => {
+            println!("eldr {}", env!("CARGO_PKG_VERSION"));
             0
         }
         "guard" => {
