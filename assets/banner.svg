@@ -85,7 +85,8 @@
       <text x="1104" y="146" fill="#7fd49a">OK</text>
       <!-- L2 cpu + sparkline -->
       <text x="630" y="180" fill="#b06a3a">CPU<tspan fill="#d8d2c8" dx="14">P 4512 · E 1991 MHz   44% load</tspan></text>
-      <g>
+      <!-- sparkline centered on the CPU line, clear of the OK status on the line above -->
+      <g transform="translate(0,14)">
         <rect x="1010" y="160" width="8" height="14" rx="2" fill="url(#bar)"/>
         <rect x="1022" y="162" width="8" height="12" rx="2" fill="url(#bar)"/>
         <rect x="1034" y="166" width="8" height="8"  rx="2" fill="url(#bar)"/>
