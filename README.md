@@ -46,8 +46,8 @@ thermal anomaly.
 
 ## Why eldr, not just another monitor
 
-[`macmon`](https://github.com/vladkens/macmon), `stats` and iStat Menus are excellent at
-*showing* you what your Mac is doing. eldr's two differences:
+Tools like `stats` and iStat Menus are excellent at *showing* you what your Mac is doing.
+eldr's two differences:
 
 - **It can act, not only watch.** When armed, the guard takes _reversible_ protective
   action on a sustained thermal anomaly — pause a runaway agent, `SIGSTOP` the top CPU hog
