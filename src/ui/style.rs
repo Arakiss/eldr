@@ -12,6 +12,8 @@ pub struct Style {
     pub green: &'static str,
     pub yellow: &'static str,
     pub blue: &'static str,
+    /// The eldr brand accent — fire orange. Used for activity bars (CPU, power).
+    pub fire: &'static str,
     pub reset: &'static str,
 }
 
@@ -23,14 +25,18 @@ impl Style {
             Style::plain()
         }
     }
+    /// 24-bit (truecolor) brand palette: fire on charcoal, with the product's own
+    /// OK/WARN/ALERT greens/ambers/reds. Modern terminals render these directly; the
+    /// codes are inert when stdout is not a tty (see `plain`).
     pub const fn color() -> Self {
         Style {
             bold: "\x1b[1m",
             dim: "\x1b[2m",
-            red: "\x1b[31m",
-            green: "\x1b[32m",
-            yellow: "\x1b[33m",
-            blue: "\x1b[34m",
+            red: "\x1b[38;2;255;95;86m",     // #ff5f56 — ALERT
+            green: "\x1b[38;2;39;201;63m",   // #27c93f — OK
+            yellow: "\x1b[38;2;255;189;46m", // #ffbd2e — WARN
+            blue: "\x1b[38;2;127;168;201m",  // #7fa8c9
+            fire: "\x1b[38;2;255;106;44m",   // #ff6a2c — brand accent
             reset: "\x1b[0m",
         }
     }
@@ -42,6 +48,7 @@ impl Style {
             green: "",
             yellow: "",
             blue: "",
+            fire: "",
             reset: "",
         }
     }
@@ -60,6 +67,22 @@ pub fn bar(v: f64, lo: f64, hi: f64, width: usize) -> String {
         s.push('░');
     }
     s
+}
+
+/// Like [`bar`], but the filled run is painted `color` and the empty run is dim — so a
+/// gauge carries its meaning in color, not just length. The caller picks `color` from the
+/// signal's health (fire for activity, green/amber/red for memory/thermal/disk).
+pub fn bar_c(v: f64, lo: f64, hi: f64, width: usize, color: &str, st: &Style) -> String {
+    let span = (hi - lo).max(f64::MIN_POSITIVE);
+    let frac = ((v - lo) / span).clamp(0.0, 1.0);
+    let filled = (frac * width as f64).round() as usize;
+    format!(
+        "{color}{}{}{}{}",
+        "█".repeat(filled),
+        st.dim,
+        "░".repeat(width.saturating_sub(filled)),
+        st.reset,
+    )
 }
 
 const SPARK: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];

@@ -7,7 +7,7 @@
 
 use crate::sensors::snapshot::{Level, Snapshot, Thermal};
 use crate::sensors::system::SystemInfo;
-use crate::ui::style::{Style, bar, sparkline};
+use crate::ui::style::{Style, bar_c, sparkline};
 use crate::ui::term::{self, RawMode};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -482,11 +482,13 @@ fn body_overview(
     );
     line(String::new(), f);
 
-    // CPU
+    // One grid: every row is label · bar · reading, columns aligned. The bar carries
+    // each signal's health in colour — fire for activity, green/amber/red for state.
+    // CPU — fire (activity), bar = load.
     line(
         format!(
-            " {d}CPU{z}      {bar}  {busy:>3.0}%   {d}P {p} · E {e} · load {la:.0}{z}",
-            bar = bar(s.cpu_load_pct as f64, 0.0, 1.0, barw),
+            " {d}CPU{z}      {bar}  {busy:>3.0}%   {d}{p} / {e} · load {la:.0}{z}",
+            bar = bar_c(s.cpu_load_pct as f64, 0.0, 1.0, barw, st.fire, st),
             busy = s.cpu_load_pct * 100.0,
             p = ghz(s.pcpu_freq_mhz),
             e = ghz(s.ecpu_freq_mhz),
@@ -494,45 +496,41 @@ fn body_overview(
         ),
         f,
     );
-    // Memory
+    // Memory — colour follows pressure, bar = used fraction.
     let press = s.mem_pressure();
     let pc = pressure_color(st, press);
     line(
         format!(
-            " {d}Memory{z}   {bar}  {used:.0} {d}GB used ·{z} {avail:.0} {d}GB free ·{z} {pc}{press}{z}",
-            bar = bar(s.ram_used as f64, 0.0, s.ram_total.max(1) as f64, barw),
+            " {d}Memory{z}   {bar}  {used:.0}{d}/{z}{tot:.0} GB {d}·{z} {pc}{press}{z}",
+            bar = bar_c(s.ram_used as f64, 0.0, s.ram_total.max(1) as f64, barw, pc, st),
             used = gib(s.ram_used),
-            avail = gib(s.ram_available),
+            tot = gib(s.ram_total),
         ),
         f,
     );
-    // Heat
+    // Heat — now a real grid row. Colour follows the thermal STATE (90° at nominal is
+    // healthy), bar = chip temp over its operating range.
     let tc = thermal_color(st, s.thermal);
     line(
         format!(
-            " {d}Heat{z}     Chip {ct:.0}° {d}· GPU {gt:.0}° ·{z} {tc}{th}{z}   {d}fan {rpm} rpm{z}",
+            " {d}Heat{z}     {bar}  {ct:.0}°{d} chip · {gt:.0}° gpu ·{z} {tc}{th}{z}",
+            bar = bar_c(s.cpu_temp as f64, 30.0, 105.0, barw, tc, st),
             ct = s.cpu_temp,
             gt = s.gpu_temp,
             th = s.thermal.as_str(),
-            rpm = s.fan_rpm,
         ),
         f,
     );
-    // Storage
+    // Storage — colour follows free-space health, bar = used fraction.
     if let Some(disk) = &s.disk {
         let (sc, word) = storage_color(st, disk.free, disk.total);
+        let used = disk.total.saturating_sub(disk.free);
         line(
             format!(
-                " {d}Storage{z}  {bar}  {used} {d}of{z} {tot} GB {d}·{z} {free} GB free   {sc}{word}{z}",
-                bar = bar(
-                    (disk.total - disk.free) as f64,
-                    0.0,
-                    disk.total.max(1) as f64,
-                    barw
-                ),
-                used = gb_dec(disk.total.saturating_sub(disk.free)),
+                " {d}Storage{z}  {bar}  {used}{d}/{z}{tot} GB {d}·{z} {sc}{word}{z}",
+                bar = bar_c(used as f64, 0.0, disk.total.max(1) as f64, barw, sc, st),
+                used = gb_dec(used),
                 tot = gb_dec(disk.total),
-                free = gb_dec(disk.free),
             ),
             f,
         );
@@ -559,7 +557,7 @@ fn body_cpu(
     line(
         format!(
             " {d}Total load{z}   {bar}  {busy:>3.0}%   {d}load avg {a:.2} · {b5:.2} · {c:.2}{z}",
-            bar = bar(s.cpu_load_pct as f64, 0.0, 1.0, barw),
+            bar = bar_c(s.cpu_load_pct as f64, 0.0, 1.0, barw, st.fire, st),
             busy = s.cpu_load_pct * 100.0,
             a = s.load_avg.0,
             b5 = s.load_avg.1,
@@ -592,7 +590,7 @@ fn body_cpu(
             format!(
                 "   P{n:<2} {bar} {pct:>3.0}%",
                 n = i + 1,
-                bar = bar(*v as f64, 0.0, 1.0, barw),
+                bar = bar_c(*v as f64, 0.0, 1.0, barw, st.fire, st),
                 pct = v * 100.0,
             ),
             f,
@@ -612,7 +610,7 @@ fn body_cpu(
             format!(
                 "   E{n:<2} {bar} {pct:>3.0}%",
                 n = i + 1,
-                bar = bar(*v as f64, 0.0, 1.0, barw),
+                bar = bar_c(*v as f64, 0.0, 1.0, barw, st.fire, st),
                 pct = v * 100.0,
             ),
             f,
@@ -732,7 +730,7 @@ fn body_memory(
             format!(
                 "   {label:<13} {val:>6.1} GB  {bar}{note}",
                 val = gib(val),
-                bar = bar(val as f64, 0.0, s.ram_total.max(1) as f64, bw),
+                bar = bar_c(val as f64, 0.0, s.ram_total.max(1) as f64, bw, st.fire, st),
             ),
             f,
         );
@@ -812,7 +810,7 @@ fn body_energy(
             format!(
                 "   {label:<4} {val:>5.1} W  {bar}",
                 val = val,
-                bar = bar(val as f64, 0.0, cap, barw + 6),
+                bar = bar_c(val as f64, 0.0, cap, barw + 6, st.fire, st),
             ),
             f,
         );
@@ -885,7 +883,7 @@ fn body_storage(
     line(
         format!(
             "   Used  {bar}  {used} {d}of{z} {tot} GB",
-            bar = bar(used as f64, 0.0, disk.total.max(1) as f64, barw + 8),
+            bar = bar_c(used as f64, 0.0, disk.total.max(1) as f64, barw + 8, sc, st),
             used = gb_dec(used),
             tot = gb_dec(disk.total),
         ),
