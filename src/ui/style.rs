@@ -19,10 +19,29 @@ pub struct Style {
 
 impl Style {
     pub fn detect() -> Self {
-        if std::io::stdout().is_terminal() {
+        if !std::io::stdout().is_terminal() {
+            return Style::plain();
+        }
+        if truecolor_supported() {
             Style::color()
         } else {
-            Style::plain()
+            Style::ansi16()
+        }
+    }
+
+    /// 8/256-colour fallback for terminals that don't advertise 24-bit colour, so the
+    /// truecolor `38;2;…` codes don't render as garbage. Keeps the OK/WARN/ALERT
+    /// semantics; a 256-colour orange (`208`) stands in for fire.
+    pub const fn ansi16() -> Self {
+        Style {
+            bold: "\x1b[1m",
+            dim: "\x1b[2m",
+            red: "\x1b[31m",
+            green: "\x1b[32m",
+            yellow: "\x1b[33m",
+            blue: "\x1b[34m",
+            fire: "\x1b[38;5;208m",
+            reset: "\x1b[0m",
         }
     }
     /// 24-bit (truecolor) brand palette: fire on charcoal, with the product's own
@@ -52,6 +71,15 @@ impl Style {
             reset: "",
         }
     }
+}
+
+/// Whether the terminal advertises 24-bit colour. macOS terminals that support it set
+/// `COLORTERM=truecolor` (or `24bit`); when it's absent we fall back rather than emit
+/// truecolor codes a basic terminal would mangle.
+fn truecolor_supported() -> bool {
+    std::env::var("COLORTERM")
+        .map(|v| v.contains("truecolor") || v.contains("24bit"))
+        .unwrap_or(false)
 }
 
 /// A filled/empty block bar of `width` cells for `v` in `[lo, hi]`.

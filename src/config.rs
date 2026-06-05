@@ -108,6 +108,11 @@ pub fn ensure_data_dir() -> std::path::PathBuf {
 pub fn status_path() -> std::path::PathBuf {
     data_dir().join("status.json")
 }
+/// Rolling telemetry series (cpu_load, fan_rpm, sys_power) the guard appends to, so the
+/// TUI can open with its sparklines already populated.
+pub fn history_path() -> std::path::PathBuf {
+    data_dir().join("history.csv")
+}
 pub fn alerts_path() -> std::path::PathBuf {
     data_dir().join("alerts.log")
 }

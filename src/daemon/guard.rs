@@ -60,10 +60,12 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut last = Level::Ok;
     let mut crit: u32 = 0; // consecutive sustained-critical samples
     let mut fired = false; // one intervention per critical episode
+    let mut history: Vec<(f64, u32, f32)> = Vec::new();
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
         let _ = snap.write_status();
+        push_history(&mut history, &snap);
 
         handle_transitions(&snap, &mut last);
 
@@ -230,4 +232,22 @@ pub fn stop() -> bool {
 /// normal on Apple Silicon and must NOT arm interventions — see [`Snapshot::fan_failed`].
 pub fn is_critical(s: &Snapshot) -> bool {
     s.thermal == Thermal::Critical || s.fan_failed()
+}
+
+const HISTORY_LEN: usize = 64;
+
+/// Append a telemetry sample and rewrite the rolling history file (≤ `HISTORY_LEN` lines
+/// of `cpu_load,fan_rpm,sys_power`), so the TUI can open with populated sparklines. Cheap:
+/// the file is tiny and rewritten in full each sample.
+fn push_history(hist: &mut Vec<(f64, u32, f32)>, s: &Snapshot) {
+    hist.push(((s.cpu_load_pct * 100.0) as f64, s.fan_rpm, s.sys_power));
+    if hist.len() > HISTORY_LEN {
+        let drop = hist.len() - HISTORY_LEN;
+        hist.drain(0..drop);
+    }
+    let body: String = hist
+        .iter()
+        .map(|(c, r, p)| format!("{c:.1},{r},{p:.1}\n"))
+        .collect();
+    let _ = std::fs::write(config::history_path(), body);
 }

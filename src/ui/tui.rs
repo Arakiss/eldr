@@ -103,9 +103,8 @@ pub fn run(interval_ms: u64) {
         help: false,
         tab: 0,
     };
-    let mut cpu_hist: Vec<f64> = Vec::with_capacity(HIST);
-    let mut rpm_hist: Vec<f64> = Vec::with_capacity(HIST);
-    let mut pwr_hist: Vec<f64> = Vec::with_capacity(HIST);
+    // Pre-fill the sparklines from the guard's rolling history, if it's been running.
+    let (mut cpu_hist, mut rpm_hist, mut pwr_hist) = load_history();
     let mut last: Option<Snapshot> = None;
 
     let draw = |snap: &Snapshot, c: &[f64], r: &[f64], p: &[f64], ui: &Ui, id: &Ident| {
@@ -216,6 +215,28 @@ fn push_hist(h: &mut Vec<f64>, v: f64) {
     if h.len() > HIST {
         h.remove(0);
     }
+}
+
+/// Seed the sparkline buffers from the guard's rolling history file (`cpu_load,fan_rpm,
+/// sys_power`), newest `HIST` rows. Empty buffers if the guard hasn't been running.
+fn load_history() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let (mut cpu, mut rpm, mut pwr) = (Vec::new(), Vec::new(), Vec::new());
+    let Ok(txt) = std::fs::read_to_string(crate::config::history_path()) else {
+        return (cpu, rpm, pwr);
+    };
+    let lines: Vec<&str> = txt.lines().collect();
+    let start = lines.len().saturating_sub(HIST);
+    for line in &lines[start..] {
+        let mut it = line.split(',');
+        if let (Some(c), Some(r), Some(p)) = (it.next(), it.next(), it.next())
+            && let (Ok(c), Ok(r), Ok(p)) = (c.parse(), r.parse(), p.parse())
+        {
+            cpu.push(c);
+            rpm.push(r);
+            pwr.push(p);
+        }
+    }
+    (cpu, rpm, pwr)
 }
 
 // MARK: formatting helpers
@@ -357,7 +378,7 @@ fn render(
     ui: &Ui,
     id: &Ident,
 ) -> String {
-    let st = Style::color();
+    let st = Style::detect();
     let (cols, _rows) = term::size();
     let w = (cols as usize).clamp(56, 100);
     let barw = ((w as f64 * 0.34) as usize).clamp(16, 34);
