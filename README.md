@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Arakiss/eldr/actions/workflows/ci.yml"><img src="https://github.com/Arakiss/eldr/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Arakiss/eldr/releases/latest"><img src="https://img.shields.io/github/v/release/Arakiss/eldr?color=e8430a&label=release" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/rust-2024_edition-orange.svg" alt="Rust 2024 edition"></a>
   <img src="https://img.shields.io/badge/dependencies-0-brightgreen.svg" alt="Zero dependencies">
