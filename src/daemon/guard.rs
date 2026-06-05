@@ -74,6 +74,8 @@ pub fn run(interval_secs: u64) -> i32 {
             crit = 0;
         }
         if crit >= wd.confirm && !fired {
+            // Always record what it WOULD do (confidence-building), then act per arming.
+            wd.observe(&snap);
             wd.intervene(&snap, false);
             fired = true;
         }

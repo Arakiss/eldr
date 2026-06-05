@@ -112,6 +112,24 @@ impl Watchdog {
         actions
     }
 
+    /// Observation mode: log what an intervention WOULD do this episode — all actions
+    /// forced on, dry, nothing performed — so a guard running with nothing armed still
+    /// records its reasoning in the action log. Builds confidence before arming for real.
+    pub fn observe(&self, snap: &Snapshot) {
+        let demo = Watchdog {
+            cmux: true,
+            interrupt: true,
+            checkpoint: true,
+            suspend: true,
+            confirm: self.confirm,
+            dryrun: true,
+        };
+        wlog("## OBSERVE — what the watchdog would do this episode (nothing performed)");
+        if demo.intervene(snap, true).is_empty() {
+            wlog("  (no reversible targets right now)");
+        }
+    }
+
     /// `git stash create` a snapshot of every dirty repo an agent is working in.
     /// Non-destructive: the working tree is left untouched; recover with `stash apply`.
     fn do_checkpoint(&self, agents: &[i32], dry: bool) -> Vec<Action> {

@@ -296,7 +296,12 @@ impl Snapshot {
     /// failure — a dead fan while the system is calling for cooling — while staying
     /// quiet at idle.
     pub fn fan_failed(&self) -> bool {
-        self.fan_max > 0 && self.fan_target >= 500 && self.fan_rpm < 500
+        // True when airflow is commanded (target up) but a fan isn't spinning. Checks the
+        // primary fan (the canonical signal, and the only one the tests set) plus every
+        // other fan the SMC reports — so a dead secondary fan is caught too, not just F0.
+        let stalled = |max: u32, target: u32, rpm: u32| max > 0 && target >= 500 && rpm < 500;
+        stalled(self.fan_max, self.fan_target, self.fan_rpm)
+            || self.fans.iter().any(|f| stalled(f.max, f.target, f.rpm))
     }
 
     /// Plain-language memory pressure from how much is reclaimable (free + cache),
@@ -602,6 +607,33 @@ mod tests {
         // No SMC envelope at all: never a failure, even with a stale target.
         s.fan_max = 0;
         assert!(!s.fan_failed());
+    }
+
+    #[test]
+    fn fan_failed_catches_a_dead_secondary_fan() {
+        use crate::ffi::smc::FanReading;
+        let mut s = Snapshot::default();
+        // Primary fan healthy (commanded and spinning).
+        s.fan_max = 7826;
+        s.fan_target = 2317;
+        s.fan_rpm = 2300;
+        // Secondary fan: airflow commanded but stalled — a real failure the watchdog
+        // would miss if it only watched the primary.
+        s.fans = vec![
+            FanReading {
+                rpm: 2300,
+                min: 2317,
+                max: 7826,
+                target: 2317,
+            },
+            FanReading {
+                rpm: 0,
+                min: 2317,
+                max: 7826,
+                target: 2317,
+            },
+        ];
+        assert!(s.fan_failed());
     }
 
     #[test]
