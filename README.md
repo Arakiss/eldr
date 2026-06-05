@@ -22,6 +22,12 @@ It reads CPU/GPU/ANE power, per-core load, temperatures and fans the same no-sud
 Apple's own tools do, and — when armed — takes **reversible** action on a sustained
 thermal anomaly.
 
+<p align="center">
+  <img src="assets/eldr-demo.gif" alt="eldr's live TUI cycling through its tabs — Overview, CPU, Cooling, Memory, Energy, Battery — with colour-coded bars" width="100%" />
+</p>
+
+<p align="center"><sub><code>eldr tui</code> — seven tabbed live views. Below is <code>eldr now</code>, the one-shot snapshot:</sub></p>
+
 ```
   eldr  Apple M4 Pro (Mac16,11)  8P+4E · 16 GPU   OK (live)
   CPU   P 4512 · E 1991 MHz    44% load ·  43% busy   ▃▃▂▂▄▃▃▃▆▆▆▆
@@ -37,6 +43,22 @@ thermal anomaly.
 > independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
+
+## Why eldr, not just another monitor
+
+[`macmon`](https://github.com/vladkens/macmon), `stats` and iStat Menus are excellent at
+*showing* you what your Mac is doing. eldr's two differences:
+
+- **It can act, not only watch.** When armed, the guard takes _reversible_ protective
+  action on a sustained thermal anomaly — pause a runaway agent, `SIGSTOP` the top CPU hog
+  (auto-resumed), `git stash create` a dirty repo. It never kills, never shuts down, never
+  closes a session. A monitor that doubles as a safety net.
+- **Zero crates, by policy.** The whole binary is `std` plus FFI eldr writes itself —
+  nothing under `[dependencies]`, one package in `Cargo.lock`. Small surface, fast builds,
+  no supply chain to trust. CI re-checks the invariant on every push.
+
+And it's built for agents as much as people: `eldr check` exits `0`/`1`/`2` for OK/WARN/ALERT,
+and `status.json` is a stable contract for tooling.
 
 ## Why zero crates
 
