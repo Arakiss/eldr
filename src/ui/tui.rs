@@ -18,8 +18,8 @@ const SAMPLE_MS: u64 = 250;
 const HIST: usize = 48;
 const MIN_INTERVAL: u64 = 250;
 const MAX_INTERVAL: u64 = 5000;
-const NTABS: u8 = 5;
-const TABS: [&str; 5] = ["Overview", "CPU", "Memory", "Energy", "Storage"];
+const NTABS: u8 = 6;
+const TABS: [&str; 6] = ["Overview", "CPU", "Cooling", "Memory", "Energy", "Storage"];
 
 /// Mutable view state the key handler drives.
 struct Ui {
@@ -420,8 +420,9 @@ fn render(
     match ui.tab {
         0 => body_overview(s, cpu_hist, id, &st, w, barw, &line, &mut f),
         1 => body_cpu(s, cpu_hist, &st, barw, &line, &blank, &mut f),
-        2 => body_memory(s, &st, w, barw, &line, &blank, &mut f),
-        3 => body_energy(s, pwr_hist, rpm_hist, &st, barw, &line, &blank, &mut f),
+        2 => body_cooling(s, rpm_hist, &st, barw, &line, &blank, &mut f),
+        3 => body_memory(s, &st, w, barw, &line, &blank, &mut f),
+        4 => body_energy(s, pwr_hist, &st, barw, &line, &blank, &mut f),
         _ => body_storage(s, id, &st, barw, &line, &blank, &mut f),
     }
 
@@ -449,7 +450,7 @@ fn render(
         };
         line(
             format!(
-                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-5{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
+                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-6{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
             ),
             &mut f,
         );
@@ -636,6 +637,107 @@ fn why_pressure(s: &Snapshot) -> String {
     }
 }
 
+fn body_cooling(
+    s: &Snapshot,
+    rpm_hist: &[f64],
+    st: &Style,
+    barw: usize,
+    line: &LineFn,
+    blank: &dyn Fn(&mut String),
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let tc = thermal_color(st, s.thermal);
+    line(
+        format!(
+            " {d}Thermal{z}     {tc}● {th}{z}   {d}{words}{z}",
+            th = s.thermal.as_str(),
+            words = thermal_words(s.thermal),
+        ),
+        f,
+    );
+    blank(f);
+    // Temps — colour follows the thermal STATE, so 90° at nominal stays calm, not red.
+    line(
+        format!(
+            " {d}CPU temp{z}    {bar}  {ct:.0}°{d} chip{z}",
+            bar = bar_c(s.cpu_temp as f64, 30.0, 105.0, barw, tc, st),
+            ct = s.cpu_temp,
+        ),
+        f,
+    );
+    line(
+        format!(
+            " {d}GPU temp{z}    {bar}  {gt:.0}°{d} gpu{z}",
+            bar = bar_c(s.gpu_temp as f64, 30.0, 105.0, barw, tc, st),
+            gt = s.gpu_temp,
+        ),
+        f,
+    );
+    blank(f);
+    // Every fan the SMC reports, each with its commanded target and operating envelope.
+    if s.fans.is_empty() {
+        line(
+            format!(" {d}Fans{z}        {d}none reported — passively cooled, or SMC unavailable{z}"),
+            f,
+        );
+    } else {
+        for (i, fan) in s.fans.iter().enumerate() {
+            let pct = if fan.max > fan.min {
+                (fan.rpm.saturating_sub(fan.min)) as f64 / (fan.max - fan.min) as f64 * 100.0
+            } else {
+                0.0
+            };
+            // Failed only when airflow is commanded (target up) but the fan isn't spinning.
+            let failed = fan.max > 0 && fan.target >= 500 && fan.rpm < 500;
+            let color = if failed { st.red } else { st.fire };
+            line(
+                format!(
+                    " {d}Fan {n}{z}       {bar}  {rpm:>4} rpm   {d}{pct:.0}% · target {tg}{z}",
+                    n = i + 1,
+                    bar = bar_c(fan.rpm as f64, fan.min as f64, fan.max as f64, barw, color, st),
+                    rpm = fan.rpm,
+                    tg = fan.target,
+                ),
+                f,
+            );
+        }
+        if let Some(f0) = s.fans.first() {
+            line(
+                format!(
+                    "             {d}envelope {mn}–{mx} rpm · 0% = idle floor{z}",
+                    mn = f0.min,
+                    mx = f0.max,
+                ),
+                f,
+            );
+        }
+    }
+    blank(f);
+    let lo = (s.fan_min as f64).min(s.fan_max as f64);
+    let hi = s.fan_max.max(1) as f64;
+    line(
+        format!(
+            " {d}Fan history{z} {fr}{spk}{z}   {d}primary fan, last {n} samples{z}",
+            fr = st.fire,
+            spk = sparkline(rpm_hist, lo, hi),
+            n = rpm_hist.len(),
+        ),
+        f,
+    );
+    blank(f);
+    line(
+        format!(" {d}Watchdog{z}    {d}arms on sustained thermal-critical or a stalled fan{z}"),
+        f,
+    );
+    line(
+        format!("             {d}reversible actions only — never kills, never shuts down{z}"),
+        f,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn body_memory(
     s: &Snapshot,
     st: &Style,
@@ -766,7 +868,6 @@ fn body_memory(
 fn body_energy(
     s: &Snapshot,
     pwr_hist: &[f64],
-    rpm_hist: &[f64],
     st: &Style,
     barw: usize,
     line: &LineFn,
@@ -815,45 +916,7 @@ fn body_energy(
             f,
         );
     }
-    blank(f);
-    line(format!(" {d}Heat — the one signal that matters{z}"), f);
-    let tc = thermal_color(st, s.thermal);
-    line(
-        format!(
-            "   Thermal pressure  {tc}● {th}{z}   {d}nothing is being throttled{z}",
-            th = s.thermal.as_str(),
-        ),
-        f,
-    );
-    line(
-        format!(
-            "   {d}Temperatures   Chip {ct:.0}° · GPU {gt:.0}°   (die runs hot by design){z}",
-            ct = s.cpu_temp,
-            gt = s.gpu_temp,
-        ),
-        f,
-    );
-    let fc = if s.fan_failed() { st.red } else { z };
-    let pct = if s.fan_max > s.fan_min {
-        (s.fan_rpm.saturating_sub(s.fan_min)) as f64 / (s.fan_max - s.fan_min) as f64 * 100.0
-    } else {
-        0.0
-    };
-    line(
-        format!(
-            "   Cooling   {fc}{rpm} rpm{z}  {y}{spk}{z}  {d}{pct:.0}% of range ({mn}–{mx}){z}",
-            rpm = s.fan_rpm,
-            y = st.yellow,
-            spk = sparkline(
-                rpm_hist,
-                (s.fan_min as f64).min(s.fan_max as f64),
-                s.fan_max.max(1) as f64
-            ),
-            mn = s.fan_min,
-            mx = s.fan_max,
-        ),
-        f,
-    );
+    // Thermal/cooling moved to its own Cooling tab; Energy stays about power.
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -997,6 +1060,16 @@ fn pressure_words(p: &str) -> &'static str {
     }
 }
 
+fn thermal_words(t: Thermal) -> &'static str {
+    match t {
+        Thermal::Nominal => "~90° is normal under load — nothing is throttling",
+        Thermal::Fair => "a little thermal pressure, handling it fine",
+        Thermal::Serious => "easing off to cool things down",
+        Thermal::Critical => "throttling hard to protect the chip",
+        Thermal::Unknown => "thermal state unknown",
+    }
+}
+
 fn procs_cpu(s: &Snapshot, st: &Style) -> String {
     let d = st.dim;
     let z = st.reset;
@@ -1104,8 +1177,17 @@ mod tests {
     }
 
     #[test]
-    fn memory_tab_is_unmistakable() {
+    fn cooling_tab_shows_thermal_and_fans() {
         let out = render(&snap(), &[], &[], &[], &ui(2), &ident());
+        assert!(out.contains("Thermal"));
+        assert!(out.contains("CPU temp"));
+        assert!(out.contains("Fan history"));
+        assert!(out.contains("Watchdog"));
+    }
+
+    #[test]
+    fn memory_tab_is_unmistakable() {
+        let out = render(&snap(), &[], &[], &[], &ui(3), &ident());
         assert!(out.contains("In use"));
         assert!(out.contains("available"));
         assert!(out.contains("Pressure"));
@@ -1114,7 +1196,7 @@ mod tests {
 
     #[test]
     fn memory_tab_explains_why() {
-        let out = render(&snap(), &[], &[], &[], &ui(2), &ident());
+        let out = render(&snap(), &[], &[], &[], &ui(3), &ident());
         // The pressure now carries a reason and names the biggest holder.
         assert!(out.contains("why →"));
         assert!(out.contains("reclaimable"));
@@ -1125,7 +1207,7 @@ mod tests {
 
     #[test]
     fn storage_tab_shows_real_ssd() {
-        let out = render(&snap(), &[], &[], &[], &ui(4), &ident());
+        let out = render(&snap(), &[], &[], &[], &ui(5), &ident());
         assert!(out.contains("APPLE SSD AP0512Z"));
         assert!(out.contains("22 GB"));
     }

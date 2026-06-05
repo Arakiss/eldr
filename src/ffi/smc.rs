@@ -370,6 +370,43 @@ pub struct SmcReadout {
     pub has_temps: bool,
 }
 
+/// One physical fan's telemetry: current RPM, the controller's commanded target, and
+/// the min/max envelope.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct FanReading {
+    pub rpm: u32,
+    pub min: u32,
+    pub max: u32,
+    pub target: u32,
+}
+
+/// Every fan the SMC reports, discovered by probing `F0*`, `F1*`, … until a fan's
+/// max-RPM key is absent. (The `FNum` count key isn't a 4-byte float, so it can't be
+/// read this way — probing the envelope keys is what's reliable.) A MacBook Pro has two
+/// fans; an Air has none. Empty if SMC is unavailable.
+pub fn read_fans() -> Vec<FanReading> {
+    let Some(mut smc) = Smc::new() else {
+        return Vec::new();
+    };
+    let mut fans = Vec::new();
+    for i in 0..8u32 {
+        // The envelope max is the presence test: no `F{i}Mx` means no fan i.
+        let Some(max) = smc.read_f32(&format!("F{i}Mx")) else {
+            break;
+        };
+        if max <= 0.0 {
+            break;
+        }
+        fans.push(FanReading {
+            rpm: smc.read_f32(&format!("F{i}Ac")).unwrap_or(0.0) as u32,
+            min: smc.read_f32(&format!("F{i}Mn")).unwrap_or(0.0) as u32,
+            max: max as u32,
+            target: smc.read_f32(&format!("F{i}Tg")).unwrap_or(0.0) as u32,
+        });
+    }
+    fans
+}
+
 /// Read fan telemetry, system power and temps in one shot. All-zero / `None` if SMC
 /// is unavailable.
 pub fn read() -> SmcReadout {

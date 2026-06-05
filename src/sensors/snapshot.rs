@@ -150,6 +150,9 @@ pub struct Snapshot {
     /// RPM the macOS thermal controller is commanding (`F0Tg`). Zero when the system
     /// wants no airflow — the normal idle state on Apple Silicon, where fans fully stop.
     pub fan_target: u32,
+    /// Every fan the SMC reports, for the Cooling view. The fields above stay the
+    /// watchdog's single signal (the primary fan); this is the full set for display.
+    pub fans: Vec<smc::FanReading>,
 
     // thermal pressure
     pub thermal: Thermal,
@@ -236,6 +239,7 @@ impl Snapshot {
         s.fan_min = smc.fan_min;
         s.fan_max = smc.fan_max;
         s.fan_target = smc.fan_target;
+        s.fans = crate::ffi::smc::read_fans();
 
         // Temps: SMC (Tp/Te/Tg) on macOS 14+, IOHID fallback for older Macs.
         if smc.has_temps {
