@@ -503,7 +503,14 @@ fn body_overview(
     line(
         format!(
             " {d}Memory{z}   {bar}  {used:.0}{d}/{z}{tot:.0} GB {d}·{z} {pc}{press}{z}",
-            bar = bar_c(s.ram_used as f64, 0.0, s.ram_total.max(1) as f64, barw, pc, st),
+            bar = bar_c(
+                s.ram_used as f64,
+                0.0,
+                s.ram_total.max(1) as f64,
+                barw,
+                pc,
+                st
+            ),
             used = gib(s.ram_used),
             tot = gib(s.ram_total),
         ),
@@ -679,7 +686,9 @@ fn body_cooling(
     // Every fan the SMC reports, each with its commanded target and operating envelope.
     if s.fans.is_empty() {
         line(
-            format!(" {d}Fans{z}        {d}none reported — passively cooled, or SMC unavailable{z}"),
+            format!(
+                " {d}Fans{z}        {d}none reported — passively cooled, or SMC unavailable{z}"
+            ),
             f,
         );
     } else {
@@ -696,7 +705,14 @@ fn body_cooling(
                 format!(
                     " {d}Fan {n}{z}       {bar}  {rpm:>4} rpm   {d}{pct:.0}% · target {tg}{z}",
                     n = i + 1,
-                    bar = bar_c(fan.rpm as f64, fan.min as f64, fan.max as f64, barw, color, st),
+                    bar = bar_c(
+                        fan.rpm as f64,
+                        fan.min as f64,
+                        fan.max as f64,
+                        barw,
+                        color,
+                        st
+                    ),
                     rpm = fan.rpm,
                     tg = fan.target,
                 ),
