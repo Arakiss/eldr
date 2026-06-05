@@ -32,7 +32,7 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.3.0`). Every reading above is cross-checked against an
+> **Status:** early but real (`v0.4.0`). Every reading above is cross-checked against an
 > independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
@@ -77,8 +77,8 @@ from — so it appears with the eldr icon under *System Settings → Login Items
 eldr now                     one-shot snapshot
 eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
 eldr status                  panel (live, or the last guard sample)
-eldr tui [--interval N]      tabbed live dashboard — Overview/CPU/Memory/Energy/Storage
-                             (←→/Tab/1-5 switch views, space pause, +/- speed, ? help)
+eldr tui [--interval N]      tabbed live dashboard — Overview/CPU/Cooling/Memory/Energy/Storage
+                             (←→/Tab/1-6 switch views, space pause, +/- speed, ? help)
 eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
 eldr sensors                 every SMC sensor — temps, fans, power, current, voltage
 
