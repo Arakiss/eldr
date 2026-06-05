@@ -133,6 +133,9 @@ pub struct Snapshot {
     pub ram_cached: u64,
     pub ram_wired: u64,
     pub ram_compressed: u64,
+    /// Uncompressed size of the data held in the compressor (≥ `ram_compressed`); the
+    /// ratio of the two is how hard macOS is packing memory.
+    pub ram_compressed_holds: u64,
     pub swap_total: u64,
     pub swap_used: u64,
 
@@ -177,6 +180,7 @@ impl Snapshot {
         s.ram_cached = mem.cached;
         s.ram_wired = mem.wired;
         s.ram_compressed = mem.compressed;
+        s.ram_compressed_holds = mem.compressed_holds;
         let (su, st) = host::swap();
         s.swap_used = su;
         s.swap_total = st;
@@ -353,6 +357,7 @@ impl Snapshot {
         o.u("ram_cached", self.ram_cached);
         o.u("ram_wired", self.ram_wired);
         o.u("ram_compressed", self.ram_compressed);
+        o.u("ram_compressed_holds", self.ram_compressed_holds);
         o.s("mem_pressure", self.mem_pressure());
         o.u("swap_total", self.swap_total);
         o.u("swap_used", self.swap_used);

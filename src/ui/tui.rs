@@ -621,6 +621,23 @@ fn body_cpu(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Plain-language reason for the current memory pressure: how much is still
+/// reclaimable and whether anything has spilled to swap. Turns a mute "● medium" into
+/// something that says *why* — the biggest holder is printed on the line below this.
+fn why_pressure(s: &Snapshot) -> String {
+    let avail = gib(s.ram_available);
+    match s.mem_pressure() {
+        "low" => format!("{avail:.1} GB reclaimable — use it freely"),
+        "medium" if s.swap_used > 0 => format!(
+            "{avail:.1} GB still reclaimable; {:.1} GB spilled to swap earlier",
+            gib(s.swap_used)
+        ),
+        "medium" => format!("{avail:.1} GB still reclaimable, nothing swapped"),
+        "high" => format!("only {avail:.1} GB left to reclaim — macOS will swap to cope"),
+        _ => "memory state unknown".to_string(),
+    }
+}
+
 fn body_memory(
     s: &Snapshot,
     st: &Style,
@@ -636,14 +653,20 @@ fn body_memory(
     let pc = pressure_color(st, press);
     let app = s.ram_used.saturating_sub(s.ram_wired + s.ram_compressed);
     let free = s.ram_available.saturating_sub(s.ram_cached);
+    let avail_pct = if s.ram_total > 0 {
+        s.ram_available as f64 / s.ram_total as f64 * 100.0
+    } else {
+        0.0
+    };
 
     line(
         format!(
-            " {d}Total{z} {tot:.0} GB   {d}·{z} {d}In use{z} {b}{used:.1} GB{z}   {d}·{z} {d}Free{z} {b}{avail:.1} GB{z} {d}available{z}",
+            " {d}Total{z} {tot:.0} GB   {d}·{z} {d}In use{z} {b}{used:.1} GB{z}   {d}·{z} {d}Free{z} {b}{avail:.1} GB{z} {d}available ({pct:.0}%){z}",
             b = st.bold,
             tot = gib(s.ram_total),
             used = gib(s.ram_used),
             avail = gib(s.ram_available),
+            pct = avail_pct,
         ),
         f,
     );
@@ -674,18 +697,40 @@ fn body_memory(
         ),
         f,
     );
+    line(format!("   {d}why → {}{z}", why_pressure(s)), f);
+    if let Some(p) = s.top_mem.first() {
+        line(
+            format!(
+                "   {d}      biggest holder: {} at {:.1} GB{z}",
+                clean_proc(&p.name),
+                gib(p.mem),
+            ),
+            f,
+        );
+    }
     blank(f);
     line(format!(" {d}What the memory holds{z}"), f);
     let bw = 14;
-    for (label, val) in [
-        ("App memory", app),
-        ("Wired", s.ram_wired),
-        ("Compressed", s.ram_compressed),
-        ("Cached files", s.ram_cached),
+    // macOS packs more data into the compressor than the physical bytes it occupies;
+    // surfacing the ratio explains why the machine fits more than its RAM size suggests.
+    let packed = if s.ram_compressed > 0 && s.ram_compressed_holds > s.ram_compressed {
+        format!(
+            "  {d}holds {h:.1} GB ({r:.1}× packed){z}",
+            h = gib(s.ram_compressed_holds),
+            r = s.ram_compressed_holds as f64 / s.ram_compressed as f64,
+        )
+    } else {
+        String::new()
+    };
+    for (label, val, note) in [
+        ("App memory", app, ""),
+        ("Wired", s.ram_wired, ""),
+        ("Compressed", s.ram_compressed, packed.as_str()),
+        ("Cached files", s.ram_cached, ""),
     ] {
         line(
             format!(
-                "   {label:<13} {val:>6.1} GB  {bar}",
+                "   {label:<13} {val:>6.1} GB  {bar}{note}",
                 val = gib(val),
                 bar = bar(val as f64, 0.0, s.ram_total.max(1) as f64, bw),
             ),
@@ -701,7 +746,7 @@ fn body_memory(
     let swap_note = if su == 0 {
         "macOS hasn't needed to swap — good"
     } else {
-        "memory has spilled to disk"
+        "parked on disk from earlier (clears on reboot)"
     };
     line(
         format!(
@@ -971,6 +1016,9 @@ mod tests {
         s.ram_cached = 7 << 30;
         s.ram_wired = 7 << 30;
         s.ram_compressed = 3 << 30;
+        s.ram_compressed_holds = 7 << 30;
+        s.swap_used = 2 << 30;
+        s.swap_total = 4 << 30;
         s.uptime_secs = 3 * 86400 + 4 * 3600;
         s.thermal = Thermal::Nominal;
         s.level = Level::Ok;
@@ -1012,6 +1060,17 @@ mod tests {
         assert!(out.contains("available"));
         assert!(out.contains("Pressure"));
         assert!(out.contains("cached"));
+    }
+
+    #[test]
+    fn memory_tab_explains_why() {
+        let out = render(&snap(), &[], &[], &[], &ui(2), &ident());
+        // The pressure now carries a reason and names the biggest holder.
+        assert!(out.contains("why →"));
+        assert!(out.contains("reclaimable"));
+        assert!(out.contains("biggest holder"));
+        // Compression ratio is surfaced (snap holds 7 GB in 3 GB physical → ~2.3×).
+        assert!(out.contains("packed"));
     }
 
     #[test]

@@ -208,8 +208,12 @@ pub struct MemInfo {
     pub free: u64,       // truly free right now
     pub cached: u64,     // file-backed + purgeable + speculative (reclaimable)
     pub wired: u64,      // can't be paged out
-    pub compressed: u64, // in the memory compressor
+    pub compressed: u64, // physical bytes the memory compressor occupies
     pub app: u64,        // anonymous app memory
+    /// Uncompressed size of the data currently held in the compressor. Divided by
+    /// `compressed` it gives the compression ratio — how much app data macOS is packing
+    /// into the physical `compressed` bytes (why 24 GB of RAM holds more than 24 GB).
+    pub compressed_holds: u64,
 }
 
 impl MemInfo {
@@ -261,6 +265,7 @@ pub fn mem_info() -> MemInfo {
     let cached = p(stats.external_page_count + stats.purgeable_count + stats.speculative_count);
     let used = wired + compressed + app;
     let available = free + cached;
+    let compressed_holds = stats.total_uncompressed_pages_in_compressor * page;
     MemInfo {
         total,
         used,
@@ -270,6 +275,7 @@ pub fn mem_info() -> MemInfo {
         wired,
         compressed,
         app,
+        compressed_holds,
     }
 }
 
