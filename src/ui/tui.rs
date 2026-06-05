@@ -365,7 +365,7 @@ fn render(
     let rule = "─".repeat(w.saturating_sub(2));
 
     let line = |row: String, out: &mut String| {
-        out.push_str(&row);
+        out.push_str(&fit(&row, w));
         out.push_str(term::clear_eol());
         out.push('\n');
     };
@@ -927,6 +927,58 @@ fn body_storage(
 
 // MARK: small shared bits
 
+/// Visible width of a styled string — counts characters, skips ANSI escape sequences
+/// (`ESC [ … letter`), so colour codes don't count toward the column budget.
+fn visible_len(s: &str) -> usize {
+    let mut n = 0;
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            for x in it.by_ref() {
+                if x.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Clip a styled line to `w` visible columns, ANSI-aware: lines that fit pass through
+/// untouched; longer ones are cut to `w-1` visible chars plus an ellipsis (and a reset,
+/// in case the cut fell inside a coloured run). Stops content from spilling past the
+/// panel edge.
+fn fit(s: &str, w: usize) -> String {
+    if visible_len(s) <= w {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut cols = 0usize;
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            out.push(c);
+            for x in it.by_ref() {
+                out.push(x);
+                if x.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if cols >= w.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        cols += 1;
+    }
+    out.push('…');
+    out.push_str("\x1b[0m");
+    out
+}
+
 fn min_max(h: &[f64]) -> (f64, f64) {
     if h.is_empty() {
         return (0.0, 0.0);
@@ -1076,6 +1128,19 @@ mod tests {
         let out = render(&snap(), &[], &[], &[], &ui(4), &ident());
         assert!(out.contains("APPLE SSD AP0512Z"));
         assert!(out.contains("22 GB"));
+    }
+
+    #[test]
+    fn fit_is_ansi_aware() {
+        // Colour codes don't count toward visible width.
+        assert_eq!(visible_len("\x1b[2mhello world\x1b[0m"), 11);
+        // A line that fits passes through untouched.
+        assert_eq!(fit("\x1b[2mhi\x1b[0m", 10), "\x1b[2mhi\x1b[0m");
+        // An over-wide line is clipped to exactly w visible columns (w-1 + ellipsis)...
+        let clipped = fit("\x1b[2mabcdefghij\x1b[0m", 5);
+        assert_eq!(visible_len(&clipped), 5);
+        // ...and never spills past the panel: the bare text case too.
+        assert_eq!(visible_len(&fit("abcdefghijklmnop", 8)), 8);
     }
 
     #[test]
