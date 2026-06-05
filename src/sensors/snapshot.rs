@@ -6,7 +6,7 @@
 //! is `status.json`, produced by [`Snapshot::to_json`].
 
 use crate::config;
-use crate::ffi::{iohid, smc, thermal};
+use crate::ffi::{battery, iohid, smc, thermal};
 use crate::sensors::{host, soc};
 
 /// Overall health verdict. Mirrors the bash prototype's OK/WARN/ALERT.
@@ -153,6 +153,8 @@ pub struct Snapshot {
     /// Every fan the SMC reports, for the Cooling view. The fields above stay the
     /// watchdog's single signal (the primary fan); this is the full set for display.
     pub fans: Vec<smc::FanReading>,
+    /// Internal battery, or `None` on a desktop Mac.
+    pub battery: Option<battery::Battery>,
 
     // thermal pressure
     pub thermal: Thermal,
@@ -240,6 +242,7 @@ impl Snapshot {
         s.fan_max = smc.fan_max;
         s.fan_target = smc.fan_target;
         s.fans = crate::ffi::smc::read_fans();
+        s.battery = battery::read();
 
         // Temps: SMC (Tp/Te/Tg) on macOS 14+, IOHID fallback for older Macs.
         if smc.has_temps {
@@ -373,6 +376,29 @@ impl Snapshot {
         o.u("fan_min", self.fan_min as u64);
         o.u("fan_max", self.fan_max as u64);
         o.u("fan_target", self.fan_target as u64);
+        if let Some(b) = &self.battery {
+            o.u("battery_percent", b.percent as u64);
+            o.s(
+                "battery_state",
+                if b.charging {
+                    "charging"
+                } else if b.on_ac {
+                    "ac"
+                } else {
+                    "discharging"
+                },
+            );
+            o.f("battery_power_w", b.power_w);
+            if let Some(t) = b.time_min {
+                o.u("battery_time_min", t as u64);
+            }
+            if let Some(c) = b.cycles {
+                o.u("battery_cycles", c as u64);
+            }
+            if let Some(h) = b.health_pct {
+                o.u("battery_health_pct", h as u64);
+            }
+        }
         o.s("thermal", self.thermal.as_str());
 
         o.u("uptime_secs", self.uptime_secs);

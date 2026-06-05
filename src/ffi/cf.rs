@@ -96,6 +96,7 @@ unsafe extern "C" {
 
     pub fn CFDataGetLength(data: CFDataRef) -> CFIndex;
     pub fn CFDataGetBytes(data: CFDataRef, range: CFRange, buffer: *mut u8);
+    pub fn CFBooleanGetValue(boolean: CFTypeRef) -> u8;
 }
 
 // MARK: helpers
@@ -152,6 +153,14 @@ pub fn cfdict_get_val(dict: CFDictionaryRef, key: &str) -> Option<*const c_void>
         CFRelease(k);
         if v.is_null() { None } else { Some(v) }
     }
+}
+
+/// Read a CFBoolean as a Rust `bool`. Borrowed ref; `false` on null.
+pub fn cfbool(boolean: *const c_void) -> bool {
+    if boolean.is_null() {
+        return false;
+    }
+    unsafe { CFBooleanGetValue(boolean) != 0 }
 }
 
 /// Read a CFNumber as `i64`. Returns `None` on null/failure.

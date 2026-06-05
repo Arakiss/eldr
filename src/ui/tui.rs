@@ -18,8 +18,10 @@ const SAMPLE_MS: u64 = 250;
 const HIST: usize = 48;
 const MIN_INTERVAL: u64 = 250;
 const MAX_INTERVAL: u64 = 5000;
-const NTABS: u8 = 6;
-const TABS: [&str; 6] = ["Overview", "CPU", "Cooling", "Memory", "Energy", "Storage"];
+const NTABS: u8 = 7;
+const TABS: [&str; 7] = [
+    "Overview", "CPU", "Cooling", "Memory", "Energy", "Battery", "Storage",
+];
 
 /// Mutable view state the key handler drives.
 struct Ui {
@@ -150,9 +152,12 @@ pub fn run(interval_ms: u64) {
                     ui.help = !ui.help;
                     dirty = true;
                 }
-                b'1'..=b'5' => {
-                    ui.tab = k - b'1';
-                    dirty = true;
+                b'1'..=b'9' => {
+                    let idx = k - b'1';
+                    if idx < NTABS {
+                        ui.tab = idx;
+                        dirty = true;
+                    }
                 }
                 b'\t' => {
                     ui.tab = (ui.tab + 1) % NTABS;
@@ -403,7 +408,7 @@ fn render(
             strip.push_str(&format!("{d}{name}{z}   "));
         }
     }
-    let speed = format!("every {:.2}s", ui.interval_ms as f64 / 1000.0);
+    let speed = format!("↻ {:.1}s", ui.interval_ms as f64 / 1000.0);
     let strip_len = 1 + TABS
         .iter()
         .enumerate()
@@ -423,6 +428,7 @@ fn render(
         2 => body_cooling(s, rpm_hist, &st, barw, &line, &blank, &mut f),
         3 => body_memory(s, &st, w, barw, &line, &blank, &mut f),
         4 => body_energy(s, pwr_hist, &st, barw, &line, &blank, &mut f),
+        5 => body_battery(s, &st, barw, &line, &blank, &mut f),
         _ => body_storage(s, id, &st, barw, &line, &blank, &mut f),
     }
 
@@ -450,7 +456,7 @@ fn render(
         };
         line(
             format!(
-                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-6{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
+                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-7{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
             ),
             &mut f,
         );
@@ -935,6 +941,95 @@ fn body_energy(
     // Thermal/cooling moved to its own Cooling tab; Energy stays about power.
 }
 
+fn battery_color(pct: u8, st: &Style) -> &'static str {
+    if pct < 20 {
+        st.red
+    } else if pct < 50 {
+        st.yellow
+    } else {
+        st.green
+    }
+}
+
+fn body_battery(
+    s: &Snapshot,
+    st: &Style,
+    barw: usize,
+    line: &LineFn,
+    blank: &dyn Fn(&mut String),
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let Some(b) = &s.battery else {
+        line(format!(" {d}No internal battery{z}"), f);
+        line(
+            format!(" {d}This Mac runs on wall power (desktop — Mac mini / Studio).{z}"),
+            f,
+        );
+        return;
+    };
+    let bc = battery_color(b.percent, st);
+    let state = if b.charging {
+        "charging"
+    } else if b.fully_charged {
+        "fully charged"
+    } else if b.on_ac {
+        "on AC, not charging"
+    } else {
+        "on battery"
+    };
+    line(
+        format!(
+            " {d}Charge{z}   {bar}  {bc}{p}%{z}   {d}{state}{z}",
+            bar = bar_c(b.percent as f64, 0.0, 100.0, barw, bc, st),
+            p = b.percent,
+        ),
+        f,
+    );
+    blank(f);
+    let time = match b.time_min {
+        Some(m) if b.charging => format!("{}:{:02} to full", m / 60, m % 60),
+        Some(m) => format!("{}:{:02} remaining", m / 60, m % 60),
+        None if b.fully_charged => "full".to_string(),
+        None => "estimating…".to_string(),
+    };
+    line(format!(" {d}Time{z}     {time}"), f);
+    let (fc, flow) = if b.power_w > 0.5 {
+        (st.green, format!("+{:.1} W  charging", b.power_w))
+    } else if b.power_w < -0.5 {
+        (st.fire, format!("{:.1} W  draining the battery", b.power_w))
+    } else {
+        (d, "~0 W  idle on AC".to_string())
+    };
+    line(format!(" {d}Flow{z}     {fc}{flow}{z}"), f);
+    blank(f);
+    if let Some(h) = b.health_pct {
+        let hc = if h < 80 { st.yellow } else { st.green };
+        let cyc = b
+            .cycles
+            .map(|c| format!("   {d}{c} cycles{z}"))
+            .unwrap_or_default();
+        line(
+            format!(
+                " {d}Health{z}   {bar}  {hc}{h}%{z} {d}of design{z}{cyc}",
+                bar = bar_c(h as f64, 0.0, 100.0, barw, hc, st),
+            ),
+            f,
+        );
+    } else if let Some(c) = b.cycles {
+        line(format!(" {d}Health{z}   {c} cycles"), f);
+    }
+    line(
+        format!(
+            " {d}Temp{z}     {t:.0}°{d} battery   ·   AC {ac}{z}",
+            t = b.temp_c,
+            ac = if b.on_ac { "connected" } else { "disconnected" },
+        ),
+        f,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn body_storage(
     s: &Snapshot,
@@ -1158,6 +1253,17 @@ mod tests {
         s.ram_compressed_holds = 7 << 30;
         s.swap_used = 2 << 30;
         s.swap_total = 4 << 30;
+        s.battery = Some(crate::ffi::battery::Battery {
+            percent: 82,
+            charging: false,
+            on_ac: false,
+            fully_charged: false,
+            time_min: Some(110),
+            power_w: -27.2,
+            temp_c: 31.0,
+            cycles: Some(185),
+            health_pct: Some(92),
+        });
         s.uptime_secs = 3 * 86400 + 4 * 3600;
         s.thermal = Thermal::Nominal;
         s.level = Level::Ok;
@@ -1222,8 +1328,18 @@ mod tests {
     }
 
     #[test]
-    fn storage_tab_shows_real_ssd() {
+    fn battery_tab_shows_charge_and_health() {
         let out = render(&snap(), &[], &[], &[], &ui(5), &ident());
+        assert!(out.contains("Charge"));
+        assert!(out.contains("82%"));
+        assert!(out.contains("Health"));
+        assert!(out.contains("185 cycles"));
+        assert!(out.contains("draining"));
+    }
+
+    #[test]
+    fn storage_tab_shows_real_ssd() {
+        let out = render(&snap(), &[], &[], &[], &ui(6), &ident());
         assert!(out.contains("APPLE SSD AP0512Z"));
         assert!(out.contains("22 GB"));
     }

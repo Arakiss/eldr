@@ -6,9 +6,11 @@
 //! - [`ioreport`] the private IOReport telemetry framework (power/freq).
 //! - [`iohid`]    IOHID temperature sensors.
 //! - [`smc`]      AppleSMC fan telemetry.
+//! - [`battery`]  AppleSmartBattery charge/health via the IORegistry.
 //! - [`proc`]     libproc process enumeration + per-process CPU.
 //! - [`thermal`]  NSProcessInfo thermal pressure via the objc runtime.
 
+pub mod battery;
 pub mod cf;
 pub mod iohid;
 pub mod iokit;
