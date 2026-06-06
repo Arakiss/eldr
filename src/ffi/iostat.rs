@@ -8,7 +8,9 @@
 //! kept off the hot snapshot path because it spawns a process.
 
 use crate::ffi::cf::{self, CFDictionaryRef};
-use crate::ffi::iokit::{IOObjectRelease, IOServiceIterator, entry_properties, entry_search_property};
+use crate::ffi::iokit::{
+    IOObjectRelease, IOServiceIterator, entry_properties, entry_search_property,
+};
 use std::process::Command;
 
 /// Raw per-disk counters and identity, straight from IOKit (no SMART verdict — that is

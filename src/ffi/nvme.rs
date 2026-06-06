@@ -108,10 +108,10 @@ const CF_PLUGIN_INTERFACE_ID: [u8; 16] = [
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NvmeSmart {
     pub temp_c: f32,
-    pub available_spare: u8,    // percent remaining
-    pub spare_threshold: u8,    // percent at which the firmware warns
-    pub percentage_used: u8,    // endurance consumed (can exceed 100)
-    pub critical_warning: u8,   // bitfield; non-zero = the firmware is worried
+    pub available_spare: u8,      // percent remaining
+    pub spare_threshold: u8,      // percent at which the firmware warns
+    pub percentage_used: u8,      // endurance consumed (can exceed 100)
+    pub critical_warning: u8,     // bitfield; non-zero = the firmware is worried
     pub data_units_written: u128, // 1000 * 512-byte units
     pub power_on_hours: u128,
     pub media_errors: u128,
@@ -137,7 +137,13 @@ pub fn read(service: u32) -> Option<NvmeSmart> {
 
         let mut plugin: *mut *mut IOCFPlugInInterface = ptr::null_mut();
         let mut score: i32 = 0;
-        if IOCreatePlugInInterfaceForService(service, plugin_type, cfplugin_id, &mut plugin, &mut score) != 0
+        if IOCreatePlugInInterfaceForService(
+            service,
+            plugin_type,
+            cfplugin_id,
+            &mut plugin,
+            &mut score,
+        ) != 0
             || plugin.is_null()
         {
             return None;
@@ -171,8 +177,22 @@ fn const_uuid(b: [u8; 16]) -> CFUUIDRef {
     unsafe {
         CFUUIDGetConstantUUIDWithBytes(
             ptr::null(),
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
-            b[14], b[15],
+            b[0],
+            b[1],
+            b[2],
+            b[3],
+            b[4],
+            b[5],
+            b[6],
+            b[7],
+            b[8],
+            b[9],
+            b[10],
+            b[11],
+            b[12],
+            b[13],
+            b[14],
+            b[15],
         )
     }
 }
@@ -182,7 +202,11 @@ fn parse(d: &[u8; 512]) -> NvmeSmart {
     // Composite temperature is Kelvin in the first two bytes after the warning byte.
     let temp_k = u16::from_le_bytes([d[1], d[2]]);
     NvmeSmart {
-        temp_c: if temp_k == 0 { 0.0 } else { temp_k as f32 - 273.15 },
+        temp_c: if temp_k == 0 {
+            0.0
+        } else {
+            temp_k as f32 - 273.15
+        },
         available_spare: d[3],
         spare_threshold: d[4],
         percentage_used: d[5],

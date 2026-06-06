@@ -336,7 +336,11 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
                 wl = h.write_latency_ms,
             );
             if let Some(n) = &h.nvme {
-                let warn = if n.critical_warning != 0 { st.red } else { st.dim };
+                let warn = if n.critical_warning != 0 {
+                    st.red
+                } else {
+                    st.dim
+                };
                 println!(
                     "         {d}└{z} {warn}temp {temp:.0}°C{z} {d}·{z} {wc}wear {used}%{z} {d}·{z} spare {spare}% {d}·{z} {tbw:.1} TB written {d}·{z} {poh}h on",
                     temp = n.temp_c,
@@ -344,7 +348,11 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
                     spare = n.available_spare,
                     tbw = n.tbw(),
                     poh = n.power_on_hours,
-                    wc = if n.percentage_used >= 90 { st.red } else { st.dim },
+                    wc = if n.percentage_used >= 90 {
+                        st.red
+                    } else {
+                        st.dim
+                    },
                 );
             }
             if h.smart_failing() || h.nvme_critical() {

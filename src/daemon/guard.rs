@@ -298,7 +298,13 @@ fn counters_grew(prev: Option<(u64, u64)>, cur: (u64, u64)) -> bool {
     prev.map(|(e, r)| cur.0 > e || cur.1 > r).unwrap_or(false)
 }
 
-fn log_disk_alert(s: &Snapshot, h: &DiskHealth, failing: bool, nvme: Option<&str>, cur: (u64, u64)) {
+fn log_disk_alert(
+    s: &Snapshot,
+    h: &DiskHealth,
+    failing: bool,
+    nvme: Option<&str>,
+    cur: (u64, u64),
+) {
     let smart = if h.smart.is_empty() {
         "unknown"
     } else {

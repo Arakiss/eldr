@@ -75,7 +75,10 @@ fn cmd_init(root: &str) -> i32 {
         match fingerprint(&p) {
             Some((hash, size, mtime)) => {
                 bytes += size;
-                entries.insert(p.to_string_lossy().into_owned(), Entry { hash, size, mtime });
+                entries.insert(
+                    p.to_string_lossy().into_owned(),
+                    Entry { hash, size, mtime },
+                );
             }
             None => skipped += 1,
         }
@@ -114,7 +117,10 @@ fn cmd_verify(root: &str, notify: bool) -> i32 {
         };
         let key = p.to_string_lossy().into_owned();
         seen.insert(key.clone());
-        match manifest.get(&key).map(|e| (e.hash.clone(), e.size, e.mtime)) {
+        match manifest
+            .get(&key)
+            .map(|e| (e.hash.clone(), e.size, e.mtime))
+        {
             None => {
                 added += 1;
                 manifest.insert(key, Entry { hash, size, mtime });
