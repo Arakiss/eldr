@@ -150,8 +150,38 @@ pub fn panel(s: &Snapshot, note: &str) {
         press = press,
     );
 
-    // Disk + net
-    if let Some(d) = &s.disk {
+    // Disk(s) + net — one entry per mounted volume (boot + external/data).
+    if !s.volumes.is_empty() {
+        let vols = s
+            .volumes
+            .iter()
+            .map(|v| {
+                let used = v.total.saturating_sub(v.free);
+                format!(
+                    "{name} {used}{d}/{z}{tot}",
+                    name = v.name,
+                    used = human_bytes(used),
+                    tot = human_bytes(v.total),
+                    d = st.dim,
+                    z = st.reset,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(&format!(" {d}·{z} ", d = st.dim, z = st.reset));
+        let net = if let Some(n) = &s.net {
+            format!(
+                "   {d}net{z} ↓{rx} ↑{tx}",
+                rx = human_rate(n.rx_rate),
+                tx = human_rate(n.tx_rate),
+                d = st.dim,
+                z = st.reset,
+            )
+        } else {
+            String::new()
+        };
+        println!("  {d}Dsk{z}   {vols}{net}", d = st.dim, z = st.reset);
+    } else if let Some(d) = &s.disk {
+        // Fallback: volume enumeration failed — show the boot disk alone.
         let used = d.total.saturating_sub(d.free);
         let line = if let Some(n) = &s.net {
             format!(

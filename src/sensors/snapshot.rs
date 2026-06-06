@@ -74,6 +74,19 @@ pub struct DiskInfo {
     pub free: u64,
 }
 
+/// One mounted user-facing volume (boot disk or an external/data volume). The boot
+/// volume is also mirrored into [`DiskInfo`] so the original `disk_*` JSON keys stay.
+#[derive(Clone, Default, Debug)]
+pub struct VolumeInfo {
+    pub name: String,        // canonical volume name, e.g. "Macintosh HD" or "Vault"
+    pub mount_point: String, // e.g. "/" or "/Volumes/Vault"
+    pub device: String,      // e.g. "/dev/disk4s2"
+    pub fs: String,          // e.g. "apfs"
+    pub total: u64,
+    pub free: u64,
+    pub external: bool, // mounted under /Volumes (refined to a true bus check in M-disk)
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct NetInfo {
     pub rx_bytes: u64,
@@ -162,6 +175,9 @@ pub struct Snapshot {
     // host extras
     pub uptime_secs: u64,
     pub disk: Option<DiskInfo>,
+    /// Every mounted user-facing volume (boot + external/data). Empty if enumeration
+    /// failed, in which case `disk` still carries the boot volume.
+    pub volumes: Vec<VolumeInfo>,
     pub net: Option<NetInfo>,
     pub top_procs: Vec<ProcInfo>,
     pub top_mem: Vec<ProcInfo>,
@@ -231,6 +247,7 @@ impl Snapshot {
         s.load_avg = hm.load;
         s.uptime_secs = hm.uptime_secs;
         s.disk = Some(hm.disk);
+        s.volumes = hm.volumes;
         s.net = Some(hm.net);
         s.top_procs = hm.top;
         s.top_mem = hm.top_mem;
@@ -411,6 +428,26 @@ impl Snapshot {
             o.u("disk_total", d.total);
             o.u("disk_free", d.free);
         }
+        // All mounted volumes (boot + external). Additive to disk_total/disk_free, which
+        // stay for the existing agent contract.
+        let vols = self
+            .volumes
+            .iter()
+            .map(|v| {
+                format!(
+                    "{{\"name\":\"{}\",\"mount\":\"{}\",\"device\":\"{}\",\"fs\":\"{}\",\"total\":{},\"free\":{},\"external\":{}}}",
+                    json_escape(&v.name),
+                    json_escape(&v.mount_point),
+                    json_escape(&v.device),
+                    json_escape(&v.fs),
+                    v.total,
+                    v.free,
+                    v.external,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        o.raw("volumes", &format!("[{vols}]"));
         if let Some(n) = &self.net {
             o.u("net_rx_bytes", n.rx_bytes);
             o.u("net_tx_bytes", n.tx_bytes);
