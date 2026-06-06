@@ -117,13 +117,18 @@ eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for age
 eldr status                  panel (live, or the last guard sample)
 eldr tui [--interval N]      tabbed live dashboard — Overview/CPU/Cooling/Memory/Energy/Battery/Storage
                              (←→/Tab/1-7 switch views, space pause, +/- speed, ? help)
+eldr watch [--interval N]    stream one line per sample (--json = NDJSON) — for agents
 eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
 eldr sensors                 every SMC sensor — temps, fans, power, current, voltage
-eldr disk                    per-volume usage + per-disk health (SMART, I/O errors, NVMe wear)
+eldr disk                    per-volume usage + per-disk health (SMART, I/O errors, NVMe wear, bus)
 
 eldr scrub init <path>       fingerprint a tree (SHA-256) into a manifest
 eldr scrub verify <path>     re-hash; report bit rot, edits, new/missing (--notify to alert)
 eldr scrub status [path]     manifest summary
+
+eldr suspend <pid>           SIGSTOP a process (refuses protected ones) — reversible
+eldr resume <pid>            SIGCONT a suspended process
+eldr checkpoint <path>       non-destructive git stash-create snapshot of a dirty repo
 
 eldr guard [--interval N]    background monitor -> status.json, alerts, interventions
 eldr guard-stop              stop a running guard
@@ -131,13 +136,39 @@ eldr guard-install           run the guard 24/7 via launchd (start at login, res
 eldr guard-uninstall         remove the launchd agent
 eldr watchdog-test           dry-run: show exactly what an intervention would do
 
+eldr mcp                     MCP server over stdio (JSON-RPC) for Claude Code / Codex
+
 eldr bench <label> [opts]    controlled load -> steady state  (--dur N --interval N --cmd "...")
 eldr report <label>          steady-state summary  (--tail N)
 eldr compare <a> <b>         iso-load delta + verdict  (--tail N)
 ```
 
-Agents read `~/.local/share/eldr/status.json` (override the directory with `ELDR_DIR`).
-`eldr check` exits `0`/`1`/`2` for OK/WARN/ALERT.
+Any read command takes `--json` for machine-readable stdout. Agents can also read
+`~/.local/share/eldr/status.json` (override the directory with `ELDR_DIR`). `eldr check`
+exits `0`/`1`/`2` for OK/WARN/ALERT; `eldr disk` exits `2`/`1`/`0`.
+
+## Built for agents
+
+eldr is meant to be driven by a harness (Claude Code, Codex) as much as by a person:
+
+- **`--json` on every read command** — `eldr disk --json`, `eldr check --json`, … emit a
+  flat JSON object on stdout with a `schema_version`, so an agent parses directly instead
+  of scraping panels.
+- **`eldr watch --json`** streams NDJSON, one snapshot per line, to follow the machine
+  over time (Ctrl-C or a closed pipe ends it).
+- **`eldr mcp`** is a Model Context Protocol server over stdio (JSON-RPC 2.0, hand-rolled,
+  zero crates). Point an MCP-capable client at it and eldr shows up as native tools:
+  `get_status`, `get_disk_health`, `get_system`, `get_sensors`.
+- **Reversible actions** — `eldr suspend`/`resume` (SIGSTOP/SIGCONT, with the watchdog's
+  protected-process denylist) and `eldr checkpoint` (a non-destructive `git stash create`)
+  let an agent act with the same safety guarantees the watchdog holds itself to. Nothing
+  here kills, shuts down, or closes.
+
+Register the MCP server with Claude Code:
+
+```sh
+claude mcp add eldr -- eldr mcp
+```
 
 ## Run it 24/7 (the guard daemon)
 
@@ -186,11 +217,16 @@ exposes it (internal SSD and external Thunderbolt-NVMe alike):
 
 ```
   DISKS
-  disk0  APPLE SSD AP0512Z        internal · SSD · SMART verified · err 0 · retry 0 · 0.2/0.0 ms r/w
+  disk0  APPLE SSD AP0512Z        internal · Apple Fabric · SSD · SMART verified · err 0 · retry 0 · 0.2/0.0 ms r/w
          └ temp 52°C · wear 1% · spare 100% · 45.1 TB written · 1408h on
-  disk4  Samsung SSD 990 PRO 4TB  external · SSD · SMART verified · err 0 · retry 0 · 0.1/0.1 ms r/w
-         └ temp 58°C · wear 0% · spare 100% · 0.1 TB written · 2h on
+  disk4  Samsung SSD 990 PRO 4TB  external · PCI-Express · SSD · SMART verified · err 0 · retry 0 · 0.1/0.1 ms r/w
+         └ temp 55°C · wear 0% · spare 100% · 0.6 TB written · 4h on · sensors 55°/77°
 ```
+
+It reports the bus (PCI-Express / USB / SATA / Apple Fabric) and, for NVMe disks, the
+firmware's on-die temperature sensors. On an external SSD those extra sensors track the
+controller/NAND heat that drives the *enclosure's* fan — the fan's own RPM isn't exposed
+to the host over USB/Thunderbolt, so this is the closest honest signal for it.
 
 When the guard is running it watches this passively: it **notifies** (never intervenes on
 a disk) when SMART flips to failing, I/O errors start rising, or the firmware raises an
