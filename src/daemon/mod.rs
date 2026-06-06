@@ -9,4 +9,5 @@ pub mod bench;
 pub mod cmux;
 pub mod guard;
 pub mod launchd;
+pub mod scrub;
 pub mod watchdog;
