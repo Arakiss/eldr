@@ -2,6 +2,7 @@
 //! library. The library does the work; `main` only routes and sets exit codes.
 
 use eldr::daemon::{bench, guard, launchd, scrub, watchdog};
+use eldr::mcp;
 use eldr::sensors::snapshot::Snapshot;
 use eldr::sensors::system::SystemInfo;
 use eldr::ui::{pretty, tui};
@@ -43,6 +44,9 @@ INTEGRITY
     scrub verify <path>     re-hash and report bit rot, edits, new/missing
                             (--notify alerts on corruption for scheduled runs)
     scrub status [path]     manifest summary
+
+AGENTS
+    mcp                     MCP server over stdio (JSON-RPC) for Claude Code / Codex
 
 EXPERIMENT
     bench <label> [opts]    controlled load -> steady state
@@ -168,6 +172,7 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         "guard-install" => launchd::install(),
         "guard-uninstall" => launchd::uninstall(),
         "watchdog-test" => watchdog::test_report(),
+        "mcp" => mcp::run(),
         "suspend" | "resume" => {
             let Some(pid) = rest
                 .iter()

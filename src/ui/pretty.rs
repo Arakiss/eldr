@@ -390,8 +390,9 @@ fn smart_word(st: &Style, smart: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// `eldr sensors --json` — every SMC sensor as a JSON array of {key, value, unit, group}.
-pub fn sensors_json() {
+/// Every SMC sensor as a JSON object `{schema_version, sensors:[{key,value,unit,group}]}`.
+/// Shared by `eldr sensors --json` and the MCP `get_sensors` tool.
+pub fn sensors_json_string() -> String {
     use crate::sensors::snapshot::json_escape;
     let sensors = smc::all_sensors();
     let items = sensors
@@ -407,10 +408,15 @@ pub fn sensors_json() {
         })
         .collect::<Vec<_>>()
         .join(",");
-    println!(
+    format!(
         "{{\"schema_version\":\"{}\",\"sensors\":[{items}]}}",
         crate::sensors::snapshot::SCHEMA_VERSION
-    );
+    )
+}
+
+/// `eldr sensors --json`.
+pub fn sensors_json() {
+    println!("{}", sensors_json_string());
 }
 
 /// `eldr check` — one terse line; the caller exits with `s.level.exit_code()`.
