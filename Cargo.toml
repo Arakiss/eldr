@@ -1,6 +1,6 @@
 [package]
 name = "eldr"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Eldr — global hardware monitor and protective watchdog for Apple Silicon. No sudo, zero crates."
 authors = ["Petru Arakiss"]
