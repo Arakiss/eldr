@@ -9,6 +9,10 @@ use crate::config;
 use crate::ffi::{battery, iohid, smc, thermal};
 use crate::sensors::{host, soc};
 
+/// status.json / `--json` schema version. Bump on a breaking shape change so an agent
+/// can tell what it's parsing.
+pub const SCHEMA_VERSION: &str = "1";
+
 /// Overall health verdict. Mirrors the bash prototype's OK/WARN/ALERT.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Level {
@@ -439,6 +443,22 @@ impl Snapshot {
         self.disk_health.iter().any(|h| h.smart_failing())
     }
 
+    /// Storage exit code for agents: 2 if any disk is SMART-failing or NVMe-critical,
+    /// 1 if any disk shows I/O errors, else 0.
+    pub fn disk_exit_code(&self) -> i32 {
+        if self
+            .disk_health
+            .iter()
+            .any(|h| h.smart_failing() || h.nvme_critical())
+        {
+            2
+        } else if self.disk_health.iter().any(|h| h.errors() > 0) {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Write status.json atomically (temp file + rename) into the data dir.
     pub fn write_status(&self) -> std::io::Result<()> {
         let dir = config::ensure_data_dir();
@@ -451,6 +471,7 @@ impl Snapshot {
     /// Serialize to status.json (hand-rolled; no `serde`). One flat object.
     pub fn to_json(&self) -> String {
         let mut o = JsonObj::new();
+        o.s("schema_version", SCHEMA_VERSION);
         o.s("ts", &self.ts);
         o.s("source", &self.source);
         o.s("level", self.level.as_str());
@@ -711,7 +732,7 @@ fn fmt_f(v: f32) -> String {
     }
 }
 
-fn json_escape(s: &str) -> String {
+pub fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -835,6 +856,7 @@ mod tests {
         assert_eq!(j.matches('{').count(), j.matches('}').count());
         assert_eq!(j.matches('[').count(), j.matches(']').count());
         assert!(j.contains("\"level\":\"OK\""));
+        assert!(j.contains("\"schema_version\":\"1\"")); // agent contract version
         assert!(j.contains("\\\"M4\\\"")); // escaped quotes
         assert!(j.contains("a\\\\b")); // escaped backslash
     }

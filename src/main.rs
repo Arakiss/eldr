@@ -42,6 +42,8 @@ EXPERIMENT
     report <label>          steady-state summary
     compare <a> <b>         iso-load delta + verdict
 
+    --json                  machine-readable JSON on stdout (now/status/check/disk/
+                            system/sensors/scrub) — for agents
     -h, --help              this help
     -V, --version           print version";
 
@@ -62,6 +64,11 @@ fn opt<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(|s| s.as_str())
 }
 
+/// True when `--json` is present — machine-readable output to stdout, for agents.
+fn json_wanted(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--json")
+}
+
 fn dispatch(cmd: &str, rest: &[String]) -> i32 {
     match cmd {
         "tui" => {
@@ -73,36 +80,52 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             tui::run(ms);
             0
         }
-        "now" => {
+        "now" | "status" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             let _ = snap.write_status();
-            pretty::panel(&snap, "(live)");
+            if json_wanted(rest) {
+                println!("{}", snap.to_json());
+            } else {
+                pretty::panel(&snap, "(live)");
+            }
             0
         }
         "system" => {
-            SystemInfo::get().render();
+            let info = SystemInfo::get();
+            if json_wanted(rest) {
+                println!("{}", info.to_json());
+            } else {
+                info.render();
+            }
             0
         }
         "disk" => {
             let mut snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             snap.read_smart();
             let _ = snap.write_status();
-            pretty::disk_panel(&snap)
+            if json_wanted(rest) {
+                println!("{}", snap.to_json());
+                snap.disk_exit_code()
+            } else {
+                pretty::disk_panel(&snap)
+            }
         }
         "sensors" => {
-            pretty::sensors_panel();
-            0
-        }
-        "status" => {
-            let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
-            let _ = snap.write_status();
-            pretty::panel(&snap, "(live)");
+            if json_wanted(rest) {
+                pretty::sensors_json();
+            } else {
+                pretty::sensors_panel();
+            }
             0
         }
         "check" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             let _ = snap.write_status();
-            pretty::check_line(&snap);
+            if json_wanted(rest) {
+                println!("{}", snap.to_json());
+            } else {
+                pretty::check_line(&snap);
+            }
             snap.level.exit_code()
         }
         "-h" | "--help" | "help" => {

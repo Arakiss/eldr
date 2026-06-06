@@ -9,6 +9,7 @@
 
 use crate::config;
 use crate::crypto::sha256::{self, Sha256};
+use crate::sensors::snapshot::SCHEMA_VERSION;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Read;
@@ -29,9 +30,10 @@ enum Verdict {
     Corrupt, // content changed but size AND mtime are identical — silent bit rot
 }
 
-/// `eldr scrub <init|verify|status> [path]`.
+/// `eldr scrub <init|verify|status> [path] [--notify] [--json]`.
 pub fn run(args: &[String]) -> i32 {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    let json = args.iter().any(|a| a == "--json");
     let path = args
         .iter()
         .skip(1)
@@ -39,14 +41,14 @@ pub fn run(args: &[String]) -> i32 {
         .map(|s| s.as_str());
     match sub {
         "init" => match path {
-            Some(p) => cmd_init(p),
+            Some(p) => cmd_init(p, json),
             None => usage(),
         },
         "verify" => match path {
-            Some(p) => cmd_verify(p, args.iter().any(|a| a == "--notify")),
+            Some(p) => cmd_verify(p, args.iter().any(|a| a == "--notify"), json),
             None => usage(),
         },
-        "status" => cmd_status(path),
+        "status" => cmd_status(path, json),
         _ => usage(),
     }
 }
@@ -63,10 +65,10 @@ fn usage() -> i32 {
     2
 }
 
-fn cmd_init(root: &str) -> i32 {
+fn cmd_init(root: &str, json: bool) -> i32 {
     let rootp = Path::new(root);
     if !rootp.is_dir() {
-        eprintln!("eldr scrub: not a directory: {root}");
+        emit_error(json, &format!("not a directory: {root}"));
         return 2;
     }
     let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
@@ -84,26 +86,41 @@ fn cmd_init(root: &str) -> i32 {
         }
     }
     if let Err(e) = write_manifest(root, &entries) {
-        eprintln!("eldr scrub: cannot write manifest: {e}");
+        emit_error(json, &format!("cannot write manifest: {e}"));
         return 1;
     }
-    let skip = if skipped > 0 {
-        format!(" · {skipped} unreadable skipped")
+    if json {
+        println!(
+            "{{\"schema_version\":\"{}\",\"action\":\"init\",\"root\":\"{}\",\"files\":{},\"bytes\":{},\"skipped\":{},\"manifest\":\"{}\"}}",
+            SCHEMA_VERSION,
+            esc(root),
+            entries.len(),
+            bytes,
+            skipped,
+            esc(&manifest_path(root).to_string_lossy()),
+        );
     } else {
-        String::new()
-    };
-    println!(
-        "indexed {} files · {}{skip}\nmanifest: {}",
-        entries.len(),
-        human(bytes),
-        manifest_path(root).display(),
-    );
+        let skip = if skipped > 0 {
+            format!(" · {skipped} unreadable skipped")
+        } else {
+            String::new()
+        };
+        println!(
+            "indexed {} files · {}{skip}\nmanifest: {}",
+            entries.len(),
+            human(bytes),
+            manifest_path(root).display(),
+        );
+    }
     0
 }
 
-fn cmd_verify(root: &str, notify: bool) -> i32 {
+fn cmd_verify(root: &str, notify: bool, json: bool) -> i32 {
     let Some((_, mut manifest)) = read_manifest(root) else {
-        eprintln!("eldr scrub: no manifest for {root}\n  run: eldr scrub init {root}");
+        emit_error(
+            json,
+            &format!("no manifest for {root}; run: eldr scrub init {root}"),
+        );
         return 2;
     };
     let rootp = Path::new(root);
@@ -149,18 +166,33 @@ fn cmd_verify(root: &str, notify: bool) -> i32 {
     // corrupt files keep their original recorded hash, so they keep being reported.
     let _ = write_manifest(root, &manifest);
 
-    println!(
-        "{intact} intact · {edited} edited · {added} new · {} missing · {} corrupt",
-        missing.len(),
-        corrupt.len(),
-    );
-    for c in &corrupt {
-        println!("  CORRUPT  {c}");
+    let code = if corrupt.is_empty() { 0 } else { 2 };
+    if json {
+        let list = corrupt
+            .iter()
+            .map(|c| format!("\"{}\"", esc(c)))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "{{\"schema_version\":\"{}\",\"action\":\"verify\",\"root\":\"{}\",\"intact\":{intact},\"edited\":{edited},\"added\":{added},\"missing\":{},\"corrupt\":[{list}],\"exit\":{code}}}",
+            SCHEMA_VERSION,
+            esc(root),
+            missing.len(),
+        );
+    } else {
+        println!(
+            "{intact} intact · {edited} edited · {added} new · {} missing · {} corrupt",
+            missing.len(),
+            corrupt.len(),
+        );
+        for c in &corrupt {
+            println!("  CORRUPT  {c}");
+        }
     }
     if !corrupt.is_empty() && notify {
         notify_corruption(root, &corrupt);
     }
-    if corrupt.is_empty() { 0 } else { 2 }
+    code
 }
 
 /// Raise a macOS notification and append to alerts.log when a scheduled scrub finds
@@ -197,52 +229,84 @@ fn notify_corruption(root: &str, corrupt: &[String]) {
     }
 }
 
-fn cmd_status(root: Option<&str>) -> i32 {
+fn cmd_status(root: Option<&str>, json: bool) -> i32 {
+    // Collect (root, files, bytes, last_scan_ts) for the requested manifest(s).
+    let mut summaries: Vec<(String, usize, u64, u64)> = Vec::new();
+    let mut missing_one = false;
     match root {
-        Some(r) => {
-            let Some((meta, entries)) = read_manifest(r) else {
-                eprintln!("eldr scrub: no manifest for {r}");
-                return 2;
-            };
-            let bytes: u64 = entries.values().map(|e| e.size).sum();
-            println!(
-                "{}: {} files · {} · last scan {}",
-                r,
-                entries.len(),
-                human(bytes),
-                fmt_age(meta.ts),
-            );
-            0
-        }
+        Some(r) => match read_manifest(r) {
+            Some((meta, entries)) => {
+                let bytes = entries.values().map(|e| e.size).sum();
+                summaries.push((r.to_string(), entries.len(), bytes, meta.ts));
+            }
+            None => missing_one = true,
+        },
         None => {
-            let dir = config::data_dir().join("scrub");
-            let Ok(rd) = fs::read_dir(&dir) else {
-                println!("no scrub manifests yet — run: eldr scrub init <path>");
-                return 0;
-            };
-            let mut any = false;
-            for ent in rd.flatten() {
-                let p = ent.path();
-                if p.extension().and_then(|e| e.to_str()) != Some("manifest") {
-                    continue;
-                }
-                if let Some((meta, entries)) = read_manifest_file(&p) {
-                    any = true;
-                    let bytes: u64 = entries.values().map(|e| e.size).sum();
-                    println!(
-                        "{}: {} files · {} · last scan {}",
-                        meta.root,
-                        entries.len(),
-                        human(bytes),
-                        fmt_age(meta.ts),
-                    );
+            if let Ok(rd) = fs::read_dir(config::data_dir().join("scrub")) {
+                for ent in rd.flatten() {
+                    let p = ent.path();
+                    if p.extension().and_then(|e| e.to_str()) != Some("manifest") {
+                        continue;
+                    }
+                    if let Some((meta, entries)) = read_manifest_file(&p) {
+                        let bytes = entries.values().map(|e| e.size).sum();
+                        summaries.push((meta.root, entries.len(), bytes, meta.ts));
+                    }
                 }
             }
-            if !any {
-                println!("no scrub manifests yet — run: eldr scrub init <path>");
-            }
-            0
         }
+    }
+
+    if missing_one {
+        emit_error(json, &format!("no manifest for {}", root.unwrap_or("")));
+        return 2;
+    }
+    if json {
+        let items = summaries
+            .iter()
+            .map(|(r, files, bytes, ts)| {
+                format!(
+                    "{{\"root\":\"{}\",\"files\":{files},\"bytes\":{bytes},\"last_scan_ts\":{ts}}}",
+                    esc(r)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "{{\"schema_version\":\"{}\",\"action\":\"status\",\"manifests\":[{items}]}}",
+            SCHEMA_VERSION
+        );
+        return 0;
+    }
+    if summaries.is_empty() {
+        println!("no scrub manifests yet — run: eldr scrub init <path>");
+        return 0;
+    }
+    for (r, files, bytes, ts) in &summaries {
+        println!(
+            "{r}: {files} files · {} · last scan {}",
+            human(*bytes),
+            fmt_age(*ts),
+        );
+    }
+    0
+}
+
+/// JSON-escape a string (shared with the snapshot serializer).
+fn esc(s: &str) -> String {
+    crate::sensors::snapshot::json_escape(s)
+}
+
+/// Report an error as JSON (under `--json`) or a plain stderr line otherwise.
+fn emit_error(json: bool, msg: &str) {
+    if json {
+        println!(
+            "{{\"schema_version\":\"{}\",\"error\":\"{}\"}}",
+            SCHEMA_VERSION,
+            esc(msg),
+        );
+    } else {
+        eprintln!("eldr scrub: {msg}");
     }
 }
 

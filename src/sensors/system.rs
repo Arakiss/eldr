@@ -57,6 +57,30 @@ impl SystemInfo {
         s
     }
 
+    /// Machine identity as one flat JSON object (`eldr system --json`).
+    pub fn to_json(&self) -> String {
+        use crate::sensors::snapshot::{SCHEMA_VERSION, json_escape as e};
+        format!(
+            "{{\"schema_version\":\"{sv}\",\"marketing\":\"{}\",\"model_id\":\"{}\",\"serial\":\"{}\",\"os_version\":\"{}\",\"os_build\":\"{}\",\"arch\":\"{}\",\"chip\":\"{}\",\"p_cores\":{},\"e_cores\":{},\"logical_cpu\":{},\"ram_bytes\":{},\"uptime_secs\":{},\"ssd_model\":\"{}\",\"ssd_bytes\":{},\"ssd_medium\":\"{}\"}}",
+            e(&self.marketing),
+            e(&self.model_id),
+            e(&self.serial),
+            e(&self.os_version),
+            e(&self.os_build),
+            e(&self.arch),
+            e(&self.chip),
+            self.p_cores,
+            self.e_cores,
+            self.logical_cpu,
+            self.ram_bytes,
+            self.uptime_secs,
+            e(&self.ssd_model),
+            self.ssd_bytes,
+            e(&self.ssd_medium),
+            sv = SCHEMA_VERSION,
+        )
+    }
+
     /// `eldr system` — a labeled identity panel.
     pub fn render(&self) {
         let st = Style::detect();

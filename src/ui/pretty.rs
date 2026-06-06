@@ -319,7 +319,6 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
         }
     }
 
-    let mut code = 0;
     if !s.disk_health.is_empty() {
         println!("\n  {d}DISKS{z}");
         for h in &s.disk_health {
@@ -355,15 +354,10 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
                     },
                 );
             }
-            if h.smart_failing() || h.nvme_critical() {
-                code = code.max(2);
-            } else if errs > 0 {
-                code = code.max(1);
-            }
         }
     }
     println!();
-    code
+    s.disk_exit_code()
 }
 
 /// Truncate to `n` characters (char-safe), adding an ellipsis when clipped.
@@ -394,6 +388,29 @@ fn smart_word(st: &Style, smart: &str) -> (&'static str, &'static str) {
         "not supported" => (st.dim, "n/a"),
         _ => (st.dim, "unknown"),
     }
+}
+
+/// `eldr sensors --json` — every SMC sensor as a JSON array of {key, value, unit, group}.
+pub fn sensors_json() {
+    use crate::sensors::snapshot::json_escape;
+    let sensors = smc::all_sensors();
+    let items = sensors
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"key\":\"{}\",\"value\":{:.3},\"unit\":\"{}\",\"group\":\"{}\"}}",
+                json_escape(&s.key),
+                s.value,
+                json_escape(s.group.unit()),
+                json_escape(s.group.title()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{{\"schema_version\":\"{}\",\"sensors\":[{items}]}}",
+        crate::sensors::snapshot::SCHEMA_VERSION
+    );
 }
 
 /// `eldr check` — one terse line; the caller exits with `s.level.exit_code()`.
