@@ -33,6 +33,11 @@ GUARD
     guard-uninstall         remove the launchd agent
     watchdog-test           dry-run: show exactly what an intervention would do
 
+ACTIONS (reversible; for agents)
+    suspend <pid>           SIGSTOP a process (refuses protected ones)
+    resume <pid>            SIGCONT a suspended process
+    checkpoint <path>       non-destructive git stash-create snapshot of a dirty repo
+
 INTEGRITY
     scrub init <path>       fingerprint a tree (SHA-256) into a manifest
     scrub verify <path>     re-hash and report bit rot, edits, new/missing
@@ -163,6 +168,28 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         "guard-install" => launchd::install(),
         "guard-uninstall" => launchd::uninstall(),
         "watchdog-test" => watchdog::test_report(),
+        "suspend" | "resume" => {
+            let Some(pid) = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
+                .and_then(|s| s.parse::<i32>().ok())
+            else {
+                eprintln!("usage: eldr {cmd} <pid>");
+                return 2;
+            };
+            if cmd == "suspend" {
+                watchdog::suspend_pid(pid, json_wanted(rest))
+            } else {
+                watchdog::resume_pid(pid, json_wanted(rest))
+            }
+        }
+        "checkpoint" => {
+            let Some(path) = rest.iter().find(|a| !a.starts_with("--")) else {
+                eprintln!("usage: eldr checkpoint <path>");
+                return 2;
+            };
+            watchdog::checkpoint_path(path, json_wanted(rest))
+        }
         "scrub" => scrub::run(rest),
         "bench" => {
             let Some(label) = rest.iter().find(|a| !a.starts_with("--")) else {
