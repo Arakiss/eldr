@@ -87,6 +87,60 @@ pub struct VolumeInfo {
     pub external: bool, // mounted under /Volumes (refined to a true bus check in M-disk)
 }
 
+/// Health of one physical disk: identity, the firmware SMART verdict, and the I/O error
+/// and latency counters that surface degradation before SMART flips. Counters are
+/// cumulative since boot; the guard watches them for growth.
+#[derive(Clone, Default, Debug)]
+pub struct DiskHealth {
+    pub bsd_name: String, // "disk4"
+    pub model: String,    // "Samsung SSD 990 PRO 4TB"
+    pub external: bool,
+    pub solid_state: bool,
+    pub smart: String, // "verified" | "failing" | "not supported" | "" (unread)
+    pub read_errors: u64,
+    pub write_errors: u64,
+    pub read_retries: u64,
+    pub write_retries: u64,
+    pub read_latency_ms: f32,
+    pub write_latency_ms: f32,
+}
+
+impl DiskHealth {
+    /// Build from raw IOKit counters, deriving mean latency (service time / operations).
+    pub fn from_stat(d: crate::ffi::iostat::DiskStat) -> Self {
+        let latency = |time_ns: u64, ops: u64| {
+            if ops > 0 {
+                (time_ns as f64 / ops as f64 / 1.0e6) as f32
+            } else {
+                0.0
+            }
+        };
+        DiskHealth {
+            read_latency_ms: latency(d.read_time_ns, d.read_ops),
+            write_latency_ms: latency(d.write_time_ns, d.write_ops),
+            bsd_name: d.bsd_name,
+            model: d.model,
+            external: d.external,
+            solid_state: d.solid_state,
+            smart: String::new(),
+            read_errors: d.read_errors,
+            write_errors: d.write_errors,
+            read_retries: d.read_retries,
+            write_retries: d.write_retries,
+        }
+    }
+    pub fn errors(&self) -> u64 {
+        self.read_errors + self.write_errors
+    }
+    pub fn retries(&self) -> u64 {
+        self.read_retries + self.write_retries
+    }
+    /// True only when the firmware itself predicts imminent failure.
+    pub fn smart_failing(&self) -> bool {
+        self.smart.eq_ignore_ascii_case("failing")
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct NetInfo {
     pub rx_bytes: u64,
@@ -178,6 +232,9 @@ pub struct Snapshot {
     /// Every mounted user-facing volume (boot + external/data). Empty if enumeration
     /// failed, in which case `disk` still carries the boot volume.
     pub volumes: Vec<VolumeInfo>,
+    /// Health of each physical disk (I/O errors, retries, latency; SMART filled lazily
+    /// by [`Snapshot::read_smart`]).
+    pub disk_health: Vec<DiskHealth>,
     pub net: Option<NetInfo>,
     pub top_procs: Vec<ProcInfo>,
     pub top_mem: Vec<ProcInfo>,
@@ -248,6 +305,10 @@ impl Snapshot {
         s.uptime_secs = hm.uptime_secs;
         s.disk = Some(hm.disk);
         s.volumes = hm.volumes;
+        s.disk_health = crate::ffi::iostat::disks()
+            .into_iter()
+            .map(DiskHealth::from_stat)
+            .collect();
         s.net = Some(hm.net);
         s.top_procs = hm.top;
         s.top_mem = hm.top_mem;
@@ -335,6 +396,22 @@ impl Snapshot {
         } else {
             "high"
         }
+    }
+
+    /// Fill the firmware SMART verdict for each physical disk. Shells out to `diskutil`,
+    /// so call it from one-shot views (`now`, `disk`) and the guard loop — never from the
+    /// TUI refresh, which must stay free of process spawns.
+    pub fn read_smart(&mut self) {
+        for h in &mut self.disk_health {
+            if !h.bsd_name.is_empty() {
+                h.smart = crate::ffi::iostat::smart_status(&h.bsd_name);
+            }
+        }
+    }
+
+    /// True if any physical disk's firmware reports SMART failing — a back-up-now signal.
+    pub fn any_disk_failing(&self) -> bool {
+        self.disk_health.iter().any(|h| h.smart_failing())
     }
 
     /// Write status.json atomically (temp file + rename) into the data dir.
@@ -448,6 +525,29 @@ impl Snapshot {
             .collect::<Vec<_>>()
             .join(",");
         o.raw("volumes", &format!("[{vols}]"));
+        // Per-physical-disk health (I/O errors/retries/latency + SMART verdict).
+        let health = self
+            .disk_health
+            .iter()
+            .map(|h| {
+                format!(
+                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{}}}",
+                    json_escape(&h.bsd_name),
+                    json_escape(&h.model),
+                    h.external,
+                    h.solid_state,
+                    json_escape(&h.smart),
+                    h.read_errors,
+                    h.write_errors,
+                    h.read_retries,
+                    h.write_retries,
+                    fmt_f(h.read_latency_ms),
+                    fmt_f(h.write_latency_ms),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        o.raw("disk_health", &format!("[{health}]"));
         if let Some(n) = &self.net {
             o.u("net_rx_bytes", n.rx_bytes);
             o.u("net_tx_bytes", n.tx_bytes);

@@ -2,7 +2,9 @@
 //! Shared infrastructure: SoC frequency discovery reads the `pmgr` entry's
 //! voltage-states; the SMC client (M2) opens `AppleSMCKeysEndpoint`.
 
-use crate::ffi::cf::{CFAllocatorRef, CFDictionaryRef, CFMutableDictionaryRef};
+use crate::ffi::cf::{
+    self, CFAllocatorRef, CFDictionaryRef, CFMutableDictionaryRef, CFStringRef, CFTypeRef,
+};
 use core::ffi::c_char;
 use std::ptr;
 
@@ -22,6 +24,13 @@ unsafe extern "C" {
         allocator: CFAllocatorRef,
         options: u32,
     ) -> i32;
+    fn IORegistryEntrySearchCFProperty(
+        entry: u32,
+        plane: *const c_char,
+        key: CFStringRef,
+        allocator: CFAllocatorRef,
+        options: u32,
+    ) -> CFTypeRef;
     pub fn IOObjectRelease(obj: u32) -> u32;
 }
 
@@ -76,6 +85,26 @@ impl Iterator for IOServiceIterator {
             .into_owned();
         Some((next, name))
     }
+}
+
+/// Search a registry entry and its children (IOService plane) for `key`, returning the
+/// first match. Owned — release with `CFRelease`. Lets a parent device node reach a
+/// property that lives in a child, e.g. an IOMedia "BSD Name" or a driver's "Statistics".
+pub fn entry_search_property(entry: u32, key: &str) -> Option<CFTypeRef> {
+    const K_IO_REGISTRY_ITERATE_RECURSIVELY: u32 = 1;
+    let k = cf::cfstr(key);
+    let plane = c"IOService";
+    let v = unsafe {
+        IORegistryEntrySearchCFProperty(
+            entry,
+            plane.as_ptr(),
+            k,
+            ptr::null(),
+            K_IO_REGISTRY_ITERATE_RECURSIVELY,
+        )
+    };
+    unsafe { cf::CFRelease(k) };
+    if v.is_null() { None } else { Some(v) }
 }
 
 /// Read a registry entry's CF properties dictionary. Owned — release with

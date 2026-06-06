@@ -20,6 +20,7 @@ READINGS
     check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
     status                  panel (live, or last guard sample)
     tui [--interval N]      live self-refreshing dashboard
+    disk                    per-volume usage + per-disk health (SMART, I/O errors)
     system                  static machine identity (model, serial, macOS, SSD)
     sensors                 every SMC sensor — temps, fans, power, current, voltage
 
@@ -75,6 +76,12 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         "system" => {
             SystemInfo::get().render();
             0
+        }
+        "disk" => {
+            let mut snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
+            snap.read_smart();
+            let _ = snap.write_status();
+            pretty::disk_panel(&snap)
         }
         "sensors" => {
             pretty::sensors_panel();
