@@ -327,8 +327,13 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
             let ec = if errs > 0 { st.red } else { st.dim };
             let loc = if h.external { "external" } else { "internal" };
             let medium = if h.solid_state { "SSD" } else { "HDD" };
+            let bus = if h.interconnect.is_empty() {
+                String::new()
+            } else {
+                format!("{} · ", h.interconnect)
+            };
             println!(
-                "  {d}{bsd:<6}{z} {model:<24} {d}{loc} · {medium} ·{z} SMART {sc}{sword}{z} {d}·{z} {ec}err {errs} · retry {retr}{z} {d}· {rl:.1}/{wl:.1} ms r/w{z}",
+                "  {d}{bsd:<6}{z} {model:<24} {d}{loc} · {bus}{medium} ·{z} SMART {sc}{sword}{z} {d}·{z} {ec}err {errs} · retry {retr}{z} {d}· {rl:.1}/{wl:.1} ms r/w{z}",
                 bsd = h.bsd_name,
                 model = trunc(&h.model, 24),
                 rl = h.read_latency_ms,
@@ -340,8 +345,25 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
                 } else {
                     st.dim
                 };
+                // Extra on-die sensors (controller/NAND), where the drive reports them.
+                let extra: Vec<String> = n
+                    .temp_sensors
+                    .iter()
+                    .filter(|t| **t > 0.0)
+                    .map(|t| format!("{t:.0}°"))
+                    .collect();
+                let sensors = if extra.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " {d}·{z} sensors {}",
+                        extra.join("/"),
+                        d = st.dim,
+                        z = st.reset
+                    )
+                };
                 println!(
-                    "         {d}└{z} {warn}temp {temp:.0}°C{z} {d}·{z} {wc}wear {used}%{z} {d}·{z} spare {spare}% {d}·{z} {tbw:.1} TB written {d}·{z} {poh}h on",
+                    "         {d}└{z} {warn}temp {temp:.0}°C{z} {d}·{z} {wc}wear {used}%{z} {d}·{z} spare {spare}% {d}·{z} {tbw:.1} TB written {d}·{z} {poh}h on{sensors}",
                     temp = n.temp_c,
                     used = n.percentage_used,
                     spare = n.available_spare,

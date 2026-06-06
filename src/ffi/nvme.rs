@@ -115,6 +115,10 @@ pub struct NvmeSmart {
     pub data_units_written: u128, // 1000 * 512-byte units
     pub power_on_hours: u128,
     pub media_errors: u128,
+    /// Up to 8 additional temperature sensors (°C), 0.0 where the drive reports none.
+    /// On an external SSD these track the controller/NAND heat that drives the enclosure
+    /// fan, even though the fan's own RPM isn't exposed to the host.
+    pub temp_sensors: [f32; 8],
 }
 
 impl NvmeSmart {
@@ -199,14 +203,18 @@ fn const_uuid(b: [u8; 16]) -> CFUUIDRef {
 
 fn parse(d: &[u8; 512]) -> NvmeSmart {
     let u128le = |o: usize| u128::from_le_bytes(d[o..o + 16].try_into().unwrap());
-    // Composite temperature is Kelvin in the first two bytes after the warning byte.
-    let temp_k = u16::from_le_bytes([d[1], d[2]]);
+    let kelvin_c = |o: usize| {
+        let k = u16::from_le_bytes([d[o], d[o + 1]]);
+        if k == 0 { 0.0 } else { k as f32 - 273.15 }
+    };
+    // Temperature Sensor 1..8 live at bytes 200..216 (u16 Kelvin each, 0 = absent).
+    let mut temp_sensors = [0f32; 8];
+    for (i, t) in temp_sensors.iter_mut().enumerate() {
+        *t = kelvin_c(200 + i * 2);
+    }
     NvmeSmart {
-        temp_c: if temp_k == 0 {
-            0.0
-        } else {
-            temp_k as f32 - 273.15
-        },
+        // Composite temperature is Kelvin in the two bytes after the warning byte.
+        temp_c: kelvin_c(1),
         available_spare: d[3],
         spare_threshold: d[4],
         percentage_used: d[5],
@@ -214,6 +222,7 @@ fn parse(d: &[u8; 512]) -> NvmeSmart {
         data_units_written: u128le(48),
         power_on_hours: u128le(128),
         media_errors: u128le(160),
+        temp_sensors,
     }
 }
 
@@ -232,9 +241,12 @@ mod tests {
         d[48..64].copy_from_slice(&2_000_000u128.to_le_bytes()); // data units written
         d[128..144].copy_from_slice(&1500u128.to_le_bytes()); // power-on hours
         d[160..176].copy_from_slice(&3u128.to_le_bytes()); // media errors
+        d[200..202].copy_from_slice(&313u16.to_le_bytes()); // sensor 1 = 313 K ≈ 39.85 °C
 
         let s = parse(&d);
         assert!((s.temp_c - 46.85).abs() < 0.1);
+        assert!((s.temp_sensors[0] - 39.85).abs() < 0.1);
+        assert_eq!(s.temp_sensors[1], 0.0); // absent sensors read as 0
         assert_eq!(s.available_spare, 100);
         assert_eq!(s.spare_threshold, 10);
         assert_eq!(s.percentage_used, 7);

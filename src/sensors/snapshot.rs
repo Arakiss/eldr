@@ -99,6 +99,7 @@ pub struct DiskHealth {
     pub bsd_name: String, // "disk4"
     pub model: String,    // "Samsung SSD 990 PRO 4TB"
     pub external: bool,
+    pub interconnect: String, // bus: "PCI-Express" | "USB" | "SATA" | "Apple Fabric"
     pub solid_state: bool,
     pub smart: String, // "verified" | "failing" | "not supported" | "" (unread)
     pub read_errors: u64,
@@ -127,6 +128,7 @@ impl DiskHealth {
             bsd_name: d.bsd_name,
             model: d.model,
             external: d.external,
+            interconnect: d.interconnect,
             solid_state: d.solid_state,
             smart: String::new(),
             read_errors: d.read_errors,
@@ -577,24 +579,34 @@ impl Snapshot {
             .iter()
             .map(|h| {
                 let nvme = match &h.nvme {
-                    Some(n) => format!(
-                        "{{\"temp_c\":{},\"percentage_used\":{},\"available_spare\":{},\"spare_threshold\":{},\"critical_warning\":{},\"tbw_tb\":{},\"power_on_hours\":{},\"media_errors\":{}}}",
-                        fmt_f(n.temp_c),
-                        n.percentage_used,
-                        n.available_spare,
-                        n.spare_threshold,
-                        n.critical_warning,
-                        fmt_f(n.tbw() as f32),
-                        n.power_on_hours,
-                        n.media_errors,
-                    ),
+                    Some(n) => {
+                        let sensors = n
+                            .temp_sensors
+                            .iter()
+                            .filter(|t| **t > 0.0)
+                            .map(|t| fmt_f(*t))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!(
+                            "{{\"temp_c\":{},\"percentage_used\":{},\"available_spare\":{},\"spare_threshold\":{},\"critical_warning\":{},\"tbw_tb\":{},\"power_on_hours\":{},\"media_errors\":{},\"temp_sensors\":[{sensors}]}}",
+                            fmt_f(n.temp_c),
+                            n.percentage_used,
+                            n.available_spare,
+                            n.spare_threshold,
+                            n.critical_warning,
+                            fmt_f(n.tbw() as f32),
+                            n.power_on_hours,
+                            n.media_errors,
+                        )
+                    }
                     None => "null".to_string(),
                 };
                 format!(
-                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
+                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"interconnect\":\"{}\",\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
                     json_escape(&h.bsd_name),
                     json_escape(&h.model),
                     h.external,
+                    json_escape(&h.interconnect),
                     h.solid_state,
                     json_escape(&h.smart),
                     h.read_errors,

@@ -16,9 +16,10 @@ use std::process::Command;
 /// Raw per-disk counters and identity, straight from IOKit (no SMART verdict — that is
 /// read separately via [`smart_status`]).
 pub struct DiskStat {
-    pub bsd_name: String, // "disk4"
-    pub model: String,    // "Samsung SSD 990 PRO 4TB"
-    pub external: bool,   // Physical Interconnect Location == External
+    pub bsd_name: String,     // "disk4"
+    pub model: String,        // "Samsung SSD 990 PRO 4TB"
+    pub external: bool,       // Physical Interconnect Location == External
+    pub interconnect: String, // "PCI-Express" | "USB" | "SATA" | "Apple Fabric"
     pub solid_state: bool,
     pub read_errors: u64,
     pub write_errors: u64,
@@ -62,8 +63,13 @@ fn read_disk(entry: u32) -> Option<DiskStat> {
         .and_then(|d| cf::cfdict_get_val(d, "Medium Type"))
         .map(cf::from_cfstr)
         .unwrap_or_default();
-    let location = cf::cfdict_get_val(props, "Protocol Characteristics")
+    let proto = cf::cfdict_get_val(props, "Protocol Characteristics");
+    let location = proto
         .and_then(|p| cf::cfdict_get_val(p, "Physical Interconnect Location"))
+        .map(cf::from_cfstr)
+        .unwrap_or_default();
+    let interconnect = proto
+        .and_then(|p| cf::cfdict_get_val(p, "Physical Interconnect"))
         .map(cf::from_cfstr)
         .unwrap_or_default();
     unsafe { cf::CFRelease(props) };
@@ -90,6 +96,7 @@ fn read_disk(entry: u32) -> Option<DiskStat> {
         bsd_name,
         model: model.trim().to_string(),
         external: location.eq_ignore_ascii_case("external"),
+        interconnect: interconnect.trim().to_string(),
         solid_state: medium.eq_ignore_ascii_case("solid state"),
         read_errors: g("Errors (Read)"),
         write_errors: g("Errors (Write)"),
