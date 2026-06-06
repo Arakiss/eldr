@@ -125,6 +125,7 @@ eldr disk                    per-volume usage + per-disk health (SMART, I/O erro
 eldr scrub init <path>       fingerprint a tree (SHA-256) into a manifest
 eldr scrub verify <path>     re-hash; report bit rot, edits, new/missing (--notify to alert)
 eldr scrub status [path]     manifest summary
+eldr prune                   cap the append-only logs; report freed + data-dir size
 
 eldr suspend <pid>           SIGSTOP a process (refuses protected ones) — reversible
 eldr resume <pid>            SIGCONT a suspended process
@@ -146,6 +147,12 @@ eldr compare <a> <b>         iso-load delta + verdict  (--tail N)
 Any read command takes `--json` for machine-readable stdout. Agents can also read
 `~/.local/share/eldr/status.json` (override the directory with `ELDR_DIR`). `eldr check`
 exits `0`/`1`/`2` for OK/WARN/ALERT; `eldr disk` exits `2`/`1`/`0`.
+
+Everything eldr writes stays in `~/.local/share/eldr` (never on the disks it watches). The
+append-only logs are capped to their most recent lines — automatically by the running
+guard (daily) and on demand with `eldr prune`. The guard also warns if the data dir grows
+past `ELDR_DATA_WARN_MB` (default 500), which usually means a scrub manifest over a volume
+with very many files.
 
 ## Built for agents
 
