@@ -5,6 +5,7 @@ use eldr::daemon::{bench, guard, launchd, scrub, watchdog};
 use eldr::sensors::snapshot::Snapshot;
 use eldr::sensors::system::SystemInfo;
 use eldr::ui::{pretty, tui};
+use eldr::watch;
 
 /// Default IOReport sampling window for one-shot readings (`now`/`status`/`check`).
 const DEFAULT_SAMPLE_MS: u64 = 500;
@@ -20,6 +21,7 @@ READINGS
     check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
     status                  panel (live, or last guard sample)
     tui [--interval N]      live self-refreshing dashboard
+    watch [--interval N]    stream one line per sample (--json = NDJSON) — for agents
     disk                    per-volume usage + per-disk health (SMART, I/O errors)
     system                  static machine identity (model, serial, macOS, SSD)
     sensors                 every SMC sensor — temps, fans, power, current, voltage
@@ -79,6 +81,14 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             let ms = (secs * 1000.0).max(200.0) as u64;
             tui::run(ms);
             0
+        }
+        "watch" => {
+            // --interval in seconds; the sample window doubles as the cadence.
+            let secs = opt(rest, "--interval")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(2.0);
+            let ms = (secs * 1000.0).max(250.0) as u64;
+            watch::run(ms, json_wanted(rest))
         }
         "now" | "status" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);

@@ -33,3 +33,4 @@ pub mod daemon;
 pub mod ffi;
 pub mod sensors;
 pub mod ui;
+pub mod watch;
