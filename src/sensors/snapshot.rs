@@ -103,6 +103,8 @@ pub struct DiskHealth {
     pub write_retries: u64,
     pub read_latency_ms: f32,
     pub write_latency_ms: f32,
+    /// Firmware NVMe SMART telemetry (temp, wear, TBW), when the disk exposes it.
+    pub nvme: Option<crate::ffi::nvme::NvmeSmart>,
 }
 
 impl DiskHealth {
@@ -127,6 +129,29 @@ impl DiskHealth {
             write_errors: d.write_errors,
             read_retries: d.read_retries,
             write_retries: d.write_retries,
+            nvme: d.nvme,
+        }
+    }
+
+    /// True when the firmware's critical-warning bitfield is set (spare low, reliability
+    /// degraded, read-only, volatile-memory failure, or over temperature).
+    pub fn nvme_critical(&self) -> bool {
+        self.nvme.map(|n| n.critical_warning != 0).unwrap_or(false)
+    }
+
+    /// An unambiguous NVMe-firmware degradation signal worth alerting on, or `None`.
+    /// Deliberately conservative — uses the disk's own thresholds, not arbitrary ones —
+    /// so it never cries wolf (transient high temperature, for instance, is not here).
+    pub fn nvme_alarm(&self) -> Option<&'static str> {
+        let n = self.nvme?;
+        if n.critical_warning != 0 {
+            Some("NVMe critical warning")
+        } else if n.spare_threshold > 0 && n.available_spare < n.spare_threshold {
+            Some("NVMe spare below firmware threshold")
+        } else if n.percentage_used >= 100 {
+            Some("NVMe endurance exhausted")
+        } else {
+            None
         }
     }
     pub fn errors(&self) -> u64 {
@@ -530,8 +555,22 @@ impl Snapshot {
             .disk_health
             .iter()
             .map(|h| {
+                let nvme = match &h.nvme {
+                    Some(n) => format!(
+                        "{{\"temp_c\":{},\"percentage_used\":{},\"available_spare\":{},\"spare_threshold\":{},\"critical_warning\":{},\"tbw_tb\":{},\"power_on_hours\":{},\"media_errors\":{}}}",
+                        fmt_f(n.temp_c),
+                        n.percentage_used,
+                        n.available_spare,
+                        n.spare_threshold,
+                        n.critical_warning,
+                        fmt_f(n.tbw() as f32),
+                        n.power_on_hours,
+                        n.media_errors,
+                    ),
+                    None => "null".to_string(),
+                };
                 format!(
-                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{}}}",
+                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
                     json_escape(&h.bsd_name),
                     json_escape(&h.model),
                     h.external,
@@ -543,6 +582,7 @@ impl Snapshot {
                     h.write_retries,
                     fmt_f(h.read_latency_ms),
                     fmt_f(h.write_latency_ms),
+                    nvme,
                 )
             })
             .collect::<Vec<_>>()

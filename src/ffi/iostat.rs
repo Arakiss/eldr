@@ -28,6 +28,8 @@ pub struct DiskStat {
     pub write_bytes: u64,
     pub read_time_ns: u64, // cumulative service time; /ops gives mean latency
     pub write_time_ns: u64,
+    /// Firmware NVMe SMART telemetry (temp, wear, TBW), when the disk exposes it.
+    pub nvme: Option<crate::ffi::nvme::NvmeSmart>,
 }
 
 /// Every physical block storage device with its I/O counters. Cheap (pure IOKit reads,
@@ -97,6 +99,8 @@ fn read_disk(entry: u32) -> Option<DiskStat> {
         write_bytes: g("Bytes (Write)"),
         read_time_ns: g("Total Time (Read)"),
         write_time_ns: g("Total Time (Write)"),
+        // Try the NVMe SMART plugin on this device node; None for non-NVMe disks.
+        nvme: crate::ffi::nvme::read(entry),
     };
     unsafe { cf::CFRelease(stats) };
     Some(d)

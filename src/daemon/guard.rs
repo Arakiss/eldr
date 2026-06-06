@@ -257,8 +257,10 @@ fn watch_disk_health(
         let grew = counters_grew(prev.get(&h.bsd_name).copied(), cur);
         prev.insert(h.bsd_name.clone(), cur);
         let failing = h.smart_failing();
+        let nvme = h.nvme_alarm();
+        let trigger = failing || nvme.is_some() || grew;
 
-        if (failing || grew) && alerted.insert(h.bsd_name.clone()) {
+        if trigger && alerted.insert(h.bsd_name.clone()) {
             let label = if h.model.is_empty() {
                 h.bsd_name.clone()
             } else {
@@ -269,16 +271,21 @@ fn watch_disk_health(
                     format!("eldr · disk {} SMART failing", h.bsd_name),
                     format!("{label}: firmware predicts failure — back up now."),
                 )
+            } else if let Some(reason) = nvme {
+                (
+                    format!("eldr · disk {} {reason}", h.bsd_name),
+                    format!("{label}: {reason} — back up and check the disk."),
+                )
             } else {
                 (
                     format!("eldr · disk {} I/O errors", h.bsd_name),
                     format!("{label}: errors rising (err {} · retry {}).", cur.0, cur.1),
                 )
             };
-            log_disk_alert(s, h, failing, cur);
+            log_disk_alert(s, h, failing, nvme, cur);
             notify_os(&title, &body);
             cmux::badge_all("DISK", &h.bsd_name, "#f85149");
-        } else if !failing && !grew {
+        } else if !trigger {
             alerted.remove(&h.bsd_name);
         }
     }
@@ -291,20 +298,23 @@ fn counters_grew(prev: Option<(u64, u64)>, cur: (u64, u64)) -> bool {
     prev.map(|(e, r)| cur.0 > e || cur.1 > r).unwrap_or(false)
 }
 
-fn log_disk_alert(s: &Snapshot, h: &DiskHealth, failing: bool, cur: (u64, u64)) {
+fn log_disk_alert(s: &Snapshot, h: &DiskHealth, failing: bool, nvme: Option<&str>, cur: (u64, u64)) {
     let smart = if h.smart.is_empty() {
         "unknown"
     } else {
         h.smart.as_str()
     };
+    let kind = if failing {
+        "FAILING"
+    } else if nvme.is_some() {
+        "NVME"
+    } else {
+        "ERRORS"
+    };
+    let detail = nvme.map(|r| format!(" nvme=\"{r}\"")).unwrap_or_default();
     let line = format!(
-        "{} DISK {} {} smart={} err={} retry={}\n",
-        s.ts,
-        h.bsd_name,
-        if failing { "FAILING" } else { "ERRORS" },
-        smart,
-        cur.0,
-        cur.1,
+        "{} DISK {} {} smart={} err={} retry={}{}\n",
+        s.ts, h.bsd_name, kind, smart, cur.0, cur.1, detail,
     );
     append(&config::alerts_path(), &line);
 }
