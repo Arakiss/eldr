@@ -1,7 +1,7 @@
 //! `eldr` — thin binary. Hand-rolled arg parsing (no `clap`), then dispatch to the
 //! library. The library does the work; `main` only routes and sets exit codes.
 
-use eldr::daemon::{bench, guard, launchd, scrub, watchdog};
+use eldr::daemon::{bench, guard, launchd, maint, scrub, watchdog};
 use eldr::mcp;
 use eldr::sensors::snapshot::Snapshot;
 use eldr::sensors::system::SystemInfo;
@@ -44,6 +44,7 @@ INTEGRITY
     scrub verify <path>     re-hash and report bit rot, edits, new/missing
                             (--notify alerts on corruption for scheduled runs)
     scrub status [path]     manifest summary
+    prune                   cap the append-only logs; report freed + data-dir size
 
 AGENTS
     mcp                     MCP server over stdio (JSON-RPC) for Claude Code / Codex
@@ -196,6 +197,7 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             watchdog::checkpoint_path(path, json_wanted(rest))
         }
         "scrub" => scrub::run(rest),
+        "prune" => maint::prune(json_wanted(rest)),
         "bench" => {
             let Some(label) = rest.iter().find(|a| !a.starts_with("--")) else {
                 eprintln!("usage: eldr bench <label> [--dur N --interval N --cmd \"...\"]");

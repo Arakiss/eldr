@@ -7,6 +7,7 @@
 
 use crate::config;
 use crate::daemon::cmux;
+use crate::daemon::maint;
 use crate::daemon::watchdog::Watchdog;
 use crate::sensors::snapshot::{DiskHealth, Level, Snapshot, Thermal};
 use core::ffi::c_int;
@@ -64,6 +65,8 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut history: Vec<(f64, u32, f32)> = Vec::new();
     let mut disk_prev: HashMap<String, (u64, u64)> = HashMap::new();
     let mut disk_alerted: HashSet<String> = HashSet::new();
+    let mut last_maint: u64 = 0; // 0 ⇒ run housekeeping once at startup
+    let mut warned_big = false;
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
@@ -73,6 +76,7 @@ pub fn run(interval_secs: u64) -> i32 {
 
         handle_transitions(&snap, &mut last);
         watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted);
+        run_maintenance(&mut last_maint, &mut warned_big);
 
         // Sustained-critical gating for armed interventions.
         if is_critical(&snap) {
@@ -288,6 +292,37 @@ fn watch_disk_health(
         } else if !trigger {
             alerted.remove(&h.bsd_name);
         }
+    }
+}
+
+/// Daily housekeeping: cap the append-only logs so they can't grow without bound, and —
+/// once per guard run — warn if the data dir has grown past the configured threshold
+/// (usually a manifest over a huge, many-file volume). Runs at startup, then every 24h.
+fn run_maintenance(last_maint: &mut u64, warned_big: &mut bool) {
+    let now = crate::sensors::host::unix_time();
+    if now.saturating_sub(*last_maint) < 86_400 {
+        return;
+    }
+    *last_maint = now;
+    maint::rotate_logs();
+    match maint::over_threshold() {
+        Some(size) if !*warned_big => {
+            *warned_big = true;
+            let human = crate::ui::style::human_bytes(size);
+            append(
+                &config::alerts_path(),
+                &format!(
+                    "{} DATA dir large: {size} bytes\n",
+                    crate::sensors::host::timestamp()
+                ),
+            );
+            notify_os(
+                "eldr · data dir large",
+                &format!("{human} under ~/.local/share/eldr — consider: eldr prune"),
+            );
+        }
+        Some(_) => {}                // already warned this run
+        None => *warned_big = false, // back under the limit; re-arm
     }
 }
 
