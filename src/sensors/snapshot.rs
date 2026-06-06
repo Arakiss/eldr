@@ -74,6 +74,98 @@ pub struct DiskInfo {
     pub free: u64,
 }
 
+/// One mounted user-facing volume (boot disk or an external/data volume). The boot
+/// volume is also mirrored into [`DiskInfo`] so the original `disk_*` JSON keys stay.
+#[derive(Clone, Default, Debug)]
+pub struct VolumeInfo {
+    pub name: String,        // canonical volume name, e.g. "Macintosh HD" or "Vault"
+    pub mount_point: String, // e.g. "/" or "/Volumes/Vault"
+    pub device: String,      // e.g. "/dev/disk4s2"
+    pub fs: String,          // e.g. "apfs"
+    pub total: u64,
+    pub free: u64,
+    pub external: bool, // mounted under /Volumes (refined to a true bus check in M-disk)
+}
+
+/// Health of one physical disk: identity, the firmware SMART verdict, and the I/O error
+/// and latency counters that surface degradation before SMART flips. Counters are
+/// cumulative since boot; the guard watches them for growth.
+#[derive(Clone, Default, Debug)]
+pub struct DiskHealth {
+    pub bsd_name: String, // "disk4"
+    pub model: String,    // "Samsung SSD 990 PRO 4TB"
+    pub external: bool,
+    pub solid_state: bool,
+    pub smart: String, // "verified" | "failing" | "not supported" | "" (unread)
+    pub read_errors: u64,
+    pub write_errors: u64,
+    pub read_retries: u64,
+    pub write_retries: u64,
+    pub read_latency_ms: f32,
+    pub write_latency_ms: f32,
+    /// Firmware NVMe SMART telemetry (temp, wear, TBW), when the disk exposes it.
+    pub nvme: Option<crate::ffi::nvme::NvmeSmart>,
+}
+
+impl DiskHealth {
+    /// Build from raw IOKit counters, deriving mean latency (service time / operations).
+    pub fn from_stat(d: crate::ffi::iostat::DiskStat) -> Self {
+        let latency = |time_ns: u64, ops: u64| {
+            if ops > 0 {
+                (time_ns as f64 / ops as f64 / 1.0e6) as f32
+            } else {
+                0.0
+            }
+        };
+        DiskHealth {
+            read_latency_ms: latency(d.read_time_ns, d.read_ops),
+            write_latency_ms: latency(d.write_time_ns, d.write_ops),
+            bsd_name: d.bsd_name,
+            model: d.model,
+            external: d.external,
+            solid_state: d.solid_state,
+            smart: String::new(),
+            read_errors: d.read_errors,
+            write_errors: d.write_errors,
+            read_retries: d.read_retries,
+            write_retries: d.write_retries,
+            nvme: d.nvme,
+        }
+    }
+
+    /// True when the firmware's critical-warning bitfield is set (spare low, reliability
+    /// degraded, read-only, volatile-memory failure, or over temperature).
+    pub fn nvme_critical(&self) -> bool {
+        self.nvme.map(|n| n.critical_warning != 0).unwrap_or(false)
+    }
+
+    /// An unambiguous NVMe-firmware degradation signal worth alerting on, or `None`.
+    /// Deliberately conservative — uses the disk's own thresholds, not arbitrary ones —
+    /// so it never cries wolf (transient high temperature, for instance, is not here).
+    pub fn nvme_alarm(&self) -> Option<&'static str> {
+        let n = self.nvme?;
+        if n.critical_warning != 0 {
+            Some("NVMe critical warning")
+        } else if n.spare_threshold > 0 && n.available_spare < n.spare_threshold {
+            Some("NVMe spare below firmware threshold")
+        } else if n.percentage_used >= 100 {
+            Some("NVMe endurance exhausted")
+        } else {
+            None
+        }
+    }
+    pub fn errors(&self) -> u64 {
+        self.read_errors + self.write_errors
+    }
+    pub fn retries(&self) -> u64 {
+        self.read_retries + self.write_retries
+    }
+    /// True only when the firmware itself predicts imminent failure.
+    pub fn smart_failing(&self) -> bool {
+        self.smart.eq_ignore_ascii_case("failing")
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct NetInfo {
     pub rx_bytes: u64,
@@ -162,6 +254,12 @@ pub struct Snapshot {
     // host extras
     pub uptime_secs: u64,
     pub disk: Option<DiskInfo>,
+    /// Every mounted user-facing volume (boot + external/data). Empty if enumeration
+    /// failed, in which case `disk` still carries the boot volume.
+    pub volumes: Vec<VolumeInfo>,
+    /// Health of each physical disk (I/O errors, retries, latency; SMART filled lazily
+    /// by [`Snapshot::read_smart`]).
+    pub disk_health: Vec<DiskHealth>,
     pub net: Option<NetInfo>,
     pub top_procs: Vec<ProcInfo>,
     pub top_mem: Vec<ProcInfo>,
@@ -231,6 +329,11 @@ impl Snapshot {
         s.load_avg = hm.load;
         s.uptime_secs = hm.uptime_secs;
         s.disk = Some(hm.disk);
+        s.volumes = hm.volumes;
+        s.disk_health = crate::ffi::iostat::disks()
+            .into_iter()
+            .map(DiskHealth::from_stat)
+            .collect();
         s.net = Some(hm.net);
         s.top_procs = hm.top;
         s.top_mem = hm.top_mem;
@@ -318,6 +421,22 @@ impl Snapshot {
         } else {
             "high"
         }
+    }
+
+    /// Fill the firmware SMART verdict for each physical disk. Shells out to `diskutil`,
+    /// so call it from one-shot views (`now`, `disk`) and the guard loop — never from the
+    /// TUI refresh, which must stay free of process spawns.
+    pub fn read_smart(&mut self) {
+        for h in &mut self.disk_health {
+            if !h.bsd_name.is_empty() {
+                h.smart = crate::ffi::iostat::smart_status(&h.bsd_name);
+            }
+        }
+    }
+
+    /// True if any physical disk's firmware reports SMART failing — a back-up-now signal.
+    pub fn any_disk_failing(&self) -> bool {
+        self.disk_health.iter().any(|h| h.smart_failing())
     }
 
     /// Write status.json atomically (temp file + rename) into the data dir.
@@ -411,6 +530,64 @@ impl Snapshot {
             o.u("disk_total", d.total);
             o.u("disk_free", d.free);
         }
+        // All mounted volumes (boot + external). Additive to disk_total/disk_free, which
+        // stay for the existing agent contract.
+        let vols = self
+            .volumes
+            .iter()
+            .map(|v| {
+                format!(
+                    "{{\"name\":\"{}\",\"mount\":\"{}\",\"device\":\"{}\",\"fs\":\"{}\",\"total\":{},\"free\":{},\"external\":{}}}",
+                    json_escape(&v.name),
+                    json_escape(&v.mount_point),
+                    json_escape(&v.device),
+                    json_escape(&v.fs),
+                    v.total,
+                    v.free,
+                    v.external,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        o.raw("volumes", &format!("[{vols}]"));
+        // Per-physical-disk health (I/O errors/retries/latency + SMART verdict).
+        let health = self
+            .disk_health
+            .iter()
+            .map(|h| {
+                let nvme = match &h.nvme {
+                    Some(n) => format!(
+                        "{{\"temp_c\":{},\"percentage_used\":{},\"available_spare\":{},\"spare_threshold\":{},\"critical_warning\":{},\"tbw_tb\":{},\"power_on_hours\":{},\"media_errors\":{}}}",
+                        fmt_f(n.temp_c),
+                        n.percentage_used,
+                        n.available_spare,
+                        n.spare_threshold,
+                        n.critical_warning,
+                        fmt_f(n.tbw() as f32),
+                        n.power_on_hours,
+                        n.media_errors,
+                    ),
+                    None => "null".to_string(),
+                };
+                format!(
+                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
+                    json_escape(&h.bsd_name),
+                    json_escape(&h.model),
+                    h.external,
+                    h.solid_state,
+                    json_escape(&h.smart),
+                    h.read_errors,
+                    h.write_errors,
+                    h.read_retries,
+                    h.write_retries,
+                    fmt_f(h.read_latency_ms),
+                    fmt_f(h.write_latency_ms),
+                    nvme,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        o.raw("disk_health", &format!("[{health}]"));
         if let Some(n) = &self.net {
             o.u("net_rx_bytes", n.rx_bytes);
             o.u("net_tx_bytes", n.tx_bytes);

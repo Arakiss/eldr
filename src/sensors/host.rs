@@ -3,7 +3,7 @@
 //! processes) use a t0/finish pair so they share the snapshot's single sample window.
 
 use crate::ffi::{mach, proc};
-use crate::sensors::snapshot::{DiskInfo, NetInfo, ProcInfo};
+use crate::sensors::snapshot::{DiskInfo, NetInfo, ProcInfo, VolumeInfo};
 use std::collections::HashMap;
 
 pub use mach::{mem_info, page_size, ram_total, ram_used, swap};
@@ -24,6 +24,7 @@ pub struct HostMetrics {
     pub load: (f32, f32, f32),
     pub uptime_secs: u64,
     pub disk: DiskInfo,
+    pub volumes: Vec<VolumeInfo>,
     pub net: NetInfo,
     pub top: Vec<ProcInfo>,
     pub top_mem: Vec<ProcInfo>,
@@ -57,6 +58,7 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
     let tx_rate = (net1.1.saturating_sub(t0.net.1)) as f64 / dt;
 
     let (dtotal, dfree) = mach::disk("/");
+    let volumes = collect_volumes();
 
     let top = proc::top(&t0.procs, &procs1, dt, top_n)
         .into_iter()
@@ -86,6 +88,7 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
             total: dtotal,
             free: dfree,
         },
+        volumes,
         net: NetInfo {
             rx_bytes: net1.0,
             tx_bytes: net1.1,
@@ -95,6 +98,45 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
         top,
         top_mem,
     }
+}
+
+/// Mounted user-facing volumes: the boot volume plus browsable local volumes under
+/// `/Volumes`. Pseudo filesystems and the system's hidden APFS volumes (Preboot, VM,
+/// Recovery, the `/System/Volumes/Data` firmlink) are filtered out, so the view shows
+/// only disks a person recognizes.
+fn collect_volumes() -> Vec<VolumeInfo> {
+    mach::volumes()
+        .into_iter()
+        .filter(|v| is_user_mount(&v.mount_point, &v.fs, v.local))
+        .map(|v| {
+            let name = mach::volume_name(&v.mount_point)
+                .or_else(|| basename(&v.mount_point))
+                .unwrap_or_else(|| v.mount_point.clone());
+            VolumeInfo {
+                external: v.mount_point.starts_with("/Volumes/"),
+                name,
+                mount_point: v.mount_point,
+                device: v.device,
+                fs: v.fs,
+                total: v.total,
+                free: v.free,
+            }
+        })
+        .collect()
+}
+
+/// True for volumes a person would recognize: the boot volume (`/`) or a local volume
+/// under `/Volumes`. Network mounts and pseudo filesystems are excluded.
+fn is_user_mount(mount_point: &str, fs: &str, local: bool) -> bool {
+    if !local || matches!(fs, "devfs" | "autofs" | "nullfs") {
+        return false;
+    }
+    mount_point == "/" || mount_point.starts_with("/Volumes/")
+}
+
+/// Last non-empty path component, or `None` for `/` and empty paths.
+fn basename(path: &str) -> Option<String> {
+    path.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// Seconds since the Unix epoch, formatted as a UTC ISO-8601 timestamp.
@@ -144,5 +186,27 @@ mod tests {
         assert_eq!(format_iso_utc(1_780_501_941), "2026-06-03T15:52:21Z");
         // leap day 2024-02-29T12:00:00Z
         assert_eq!(format_iso_utc(1_709_208_000), "2024-02-29T12:00:00Z");
+    }
+
+    #[test]
+    fn user_mount_filter() {
+        // Shown: the boot volume and local volumes under /Volumes.
+        assert!(is_user_mount("/", "apfs", true));
+        assert!(is_user_mount("/Volumes/Vault", "apfs", true));
+        assert!(is_user_mount("/Volumes/Backup", "exfat", true));
+        // Hidden: the system's firmlinked data + helper volumes.
+        assert!(!is_user_mount("/System/Volumes/Data", "apfs", true));
+        assert!(!is_user_mount("/System/Volumes/VM", "apfs", true));
+        // Excluded: network mounts and pseudo filesystems.
+        assert!(!is_user_mount("/Volumes/NetShare", "smbfs", false));
+        assert!(!is_user_mount("/dev", "devfs", true));
+    }
+
+    #[test]
+    fn basename_handles_root_and_paths() {
+        assert_eq!(basename("/Volumes/Vault"), Some("Vault".to_string()));
+        assert_eq!(basename("/Volumes/My Disk"), Some("My Disk".to_string()));
+        assert_eq!(basename("/"), None);
+        assert_eq!(basename(""), None);
     }
 }

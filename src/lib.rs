@@ -28,6 +28,7 @@ compile_error!(
 );
 
 pub mod config;
+pub mod crypto;
 pub mod daemon;
 pub mod ffi;
 pub mod sensors;

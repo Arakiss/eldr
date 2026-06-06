@@ -150,8 +150,38 @@ pub fn panel(s: &Snapshot, note: &str) {
         press = press,
     );
 
-    // Disk + net
-    if let Some(d) = &s.disk {
+    // Disk(s) + net — one entry per mounted volume (boot + external/data).
+    if !s.volumes.is_empty() {
+        let vols = s
+            .volumes
+            .iter()
+            .map(|v| {
+                let used = v.total.saturating_sub(v.free);
+                format!(
+                    "{name} {used}{d}/{z}{tot}",
+                    name = v.name,
+                    used = human_bytes(used),
+                    tot = human_bytes(v.total),
+                    d = st.dim,
+                    z = st.reset,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(&format!(" {d}·{z} ", d = st.dim, z = st.reset));
+        let net = if let Some(n) = &s.net {
+            format!(
+                "   {d}net{z} ↓{rx} ↑{tx}",
+                rx = human_rate(n.rx_rate),
+                tx = human_rate(n.tx_rate),
+                d = st.dim,
+                z = st.reset,
+            )
+        } else {
+            String::new()
+        };
+        println!("  {d}Dsk{z}   {vols}{net}", d = st.dim, z = st.reset);
+    } else if let Some(d) = &s.disk {
+        // Fallback: volume enumeration failed — show the boot disk alone.
         let used = d.total.saturating_sub(d.free);
         let line = if let Some(n) = &s.net {
             format!(
@@ -253,6 +283,116 @@ pub fn sensors_panel() {
             println!("    {}   {right}", cell(pair[0]));
         }
         println!();
+    }
+}
+
+/// `eldr disk` — per-volume capacity plus per-physical-disk health (SMART + I/O errors
+/// and latency). Returns an exit code: 2 if any disk is SMART-failing, 1 if any disk
+/// shows I/O errors, else 0 — so an agent can gate on storage health.
+pub fn disk_panel(s: &Snapshot) -> i32 {
+    let st = Style::detect();
+    let d = st.dim;
+    let z = st.reset;
+
+    println!();
+    println!("  {b}eldr{z} {d}· storage{z}", b = st.bold);
+
+    if !s.volumes.is_empty() {
+        println!("\n  {d}VOLUMES{z}");
+        for v in &s.volumes {
+            let used = v.total.saturating_sub(v.free);
+            let frac_free = if v.total > 0 {
+                v.free as f64 / v.total as f64
+            } else {
+                1.0
+            };
+            let (wc, word) = free_word(&st, frac_free);
+            let place = if v.external { "ext" } else { "int" };
+            println!(
+                "  {name:<14} {d}{mount:<16}{z} {used} {d}/{z} {tot} {d}used ·{z} {free} {d}free ·{z} {wc}{word}{z} {d}({place}){z}",
+                name = trunc(&v.name, 14),
+                mount = trunc(&v.mount_point, 16),
+                used = human_bytes(used),
+                tot = human_bytes(v.total),
+                free = human_bytes(v.free),
+            );
+        }
+    }
+
+    let mut code = 0;
+    if !s.disk_health.is_empty() {
+        println!("\n  {d}DISKS{z}");
+        for h in &s.disk_health {
+            let (sc, sword) = smart_word(&st, &h.smart);
+            let (errs, retr) = (h.errors(), h.retries());
+            let ec = if errs > 0 { st.red } else { st.dim };
+            let loc = if h.external { "external" } else { "internal" };
+            let medium = if h.solid_state { "SSD" } else { "HDD" };
+            println!(
+                "  {d}{bsd:<6}{z} {model:<24} {d}{loc} · {medium} ·{z} SMART {sc}{sword}{z} {d}·{z} {ec}err {errs} · retry {retr}{z} {d}· {rl:.1}/{wl:.1} ms r/w{z}",
+                bsd = h.bsd_name,
+                model = trunc(&h.model, 24),
+                rl = h.read_latency_ms,
+                wl = h.write_latency_ms,
+            );
+            if let Some(n) = &h.nvme {
+                let warn = if n.critical_warning != 0 {
+                    st.red
+                } else {
+                    st.dim
+                };
+                println!(
+                    "         {d}└{z} {warn}temp {temp:.0}°C{z} {d}·{z} {wc}wear {used}%{z} {d}·{z} spare {spare}% {d}·{z} {tbw:.1} TB written {d}·{z} {poh}h on",
+                    temp = n.temp_c,
+                    used = n.percentage_used,
+                    spare = n.available_spare,
+                    tbw = n.tbw(),
+                    poh = n.power_on_hours,
+                    wc = if n.percentage_used >= 90 {
+                        st.red
+                    } else {
+                        st.dim
+                    },
+                );
+            }
+            if h.smart_failing() || h.nvme_critical() {
+                code = code.max(2);
+            } else if errs > 0 {
+                code = code.max(1);
+            }
+        }
+    }
+    println!();
+    code
+}
+
+/// Truncate to `n` characters (char-safe), adding an ellipsis when clipped.
+fn trunc(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    }
+}
+
+/// Colour + word for free-space health.
+fn free_word(st: &Style, frac_free: f64) -> (&'static str, &'static str) {
+    if frac_free < 0.05 {
+        (st.red, "critical")
+    } else if frac_free < 0.10 {
+        (st.yellow, "low")
+    } else {
+        (st.green, "plenty")
+    }
+}
+
+/// Colour + word for the firmware SMART verdict.
+fn smart_word(st: &Style, smart: &str) -> (&'static str, &'static str) {
+    match smart.to_ascii_lowercase().as_str() {
+        "verified" => (st.green, "verified"),
+        "failing" => (st.red, "FAILING"),
+        "not supported" => (st.dim, "n/a"),
+        _ => (st.dim, "unknown"),
     }
 }
 

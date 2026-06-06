@@ -1,7 +1,7 @@
 //! `eldr` — thin binary. Hand-rolled arg parsing (no `clap`), then dispatch to the
 //! library. The library does the work; `main` only routes and sets exit codes.
 
-use eldr::daemon::{bench, guard, launchd, watchdog};
+use eldr::daemon::{bench, guard, launchd, scrub, watchdog};
 use eldr::sensors::snapshot::Snapshot;
 use eldr::sensors::system::SystemInfo;
 use eldr::ui::{pretty, tui};
@@ -20,6 +20,7 @@ READINGS
     check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
     status                  panel (live, or last guard sample)
     tui [--interval N]      live self-refreshing dashboard
+    disk                    per-volume usage + per-disk health (SMART, I/O errors)
     system                  static machine identity (model, serial, macOS, SSD)
     sensors                 every SMC sensor — temps, fans, power, current, voltage
 
@@ -29,6 +30,12 @@ GUARD
     guard-install           run guard 24/7 via launchd
     guard-uninstall         remove the launchd agent
     watchdog-test           dry-run: show exactly what an intervention would do
+
+INTEGRITY
+    scrub init <path>       fingerprint a tree (SHA-256) into a manifest
+    scrub verify <path>     re-hash and report bit rot, edits, new/missing
+                            (--notify alerts on corruption for scheduled runs)
+    scrub status [path]     manifest summary
 
 EXPERIMENT
     bench <label> [opts]    controlled load -> steady state
@@ -76,6 +83,12 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             SystemInfo::get().render();
             0
         }
+        "disk" => {
+            let mut snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
+            snap.read_smart();
+            let _ = snap.write_status();
+            pretty::disk_panel(&snap)
+        }
         "sensors" => {
             pretty::sensors_panel();
             0
@@ -117,6 +130,7 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         "guard-install" => launchd::install(),
         "guard-uninstall" => launchd::uninstall(),
         "watchdog-test" => watchdog::test_report(),
+        "scrub" => scrub::run(rest),
         "bench" => {
             let Some(label) = rest.iter().find(|a| !a.starts_with("--")) else {
                 eprintln!("usage: eldr bench <label> [--dur N --interval N --cmd \"...\"]");

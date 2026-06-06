@@ -556,19 +556,41 @@ fn body_overview(
         ),
         f,
     );
-    // Storage — colour follows free-space health, bar = used fraction.
-    if let Some(disk) = &s.disk {
-        let (sc, word) = storage_color(st, disk.free, disk.total);
-        let used = disk.total.saturating_sub(disk.free);
-        line(
-            format!(
-                " {d}Storage{z}  {bar}  {used}{d}/{z}{tot} GB {d}·{z} {sc}{word}{z}",
-                bar = bar_c(used as f64, 0.0, disk.total.max(1) as f64, barw, sc, st),
-                used = gb_dec(used),
-                tot = gb_dec(disk.total),
-            ),
-            f,
-        );
+    // Storage — boot volume on the "Storage" row, each external volume on its own row.
+    // Colour follows free-space health, bar = used fraction.
+    if s.volumes.is_empty() {
+        if let Some(disk) = &s.disk {
+            let (sc, word) = storage_color(st, disk.free, disk.total);
+            let used = disk.total.saturating_sub(disk.free);
+            line(
+                format!(
+                    " {d}Storage{z}  {bar}  {used}{d}/{z}{tot} GB {d}·{z} {sc}{word}{z}",
+                    bar = bar_c(used as f64, 0.0, disk.total.max(1) as f64, barw, sc, st),
+                    used = gb_dec(used),
+                    tot = gb_dec(disk.total),
+                ),
+                f,
+            );
+        }
+    } else {
+        for v in &s.volumes {
+            let (sc, word) = storage_color(st, v.free, v.total);
+            let used = v.total.saturating_sub(v.free);
+            let label = if v.mount_point == "/" {
+                "Storage"
+            } else {
+                v.name.as_str()
+            };
+            line(
+                format!(
+                    " {d}{label:<7}{z}  {bar}  {used}{d}/{z}{tot} GB {d}·{z} {sc}{word}{z}",
+                    bar = bar_c(used as f64, 0.0, v.total.max(1) as f64, barw, sc, st),
+                    used = gb_dec(used),
+                    tot = gb_dec(v.total),
+                ),
+                f,
+            );
+        }
     }
     let _ = (id, cpu_hist);
     line(String::new(), f);
@@ -1063,40 +1085,71 @@ fn body_storage(
 ) {
     let d = st.dim;
     let z = st.reset;
-    let Some(disk) = &s.disk else {
-        line(format!(" {d}disk info unavailable{z}"), f);
-        return;
-    };
-    let used = disk.total.saturating_sub(disk.free);
-    let pct = if disk.total > 0 {
-        used as f64 / disk.total as f64 * 100.0
-    } else {
-        0.0
-    };
-    let (sc, word) = storage_color(st, disk.free, disk.total);
-    line(format!(" {d}Startup disk “/”{z}"), f);
-    line(
-        format!(
-            "   Used  {bar}  {used} {d}of{z} {tot} GB",
-            bar = bar_c(used as f64, 0.0, disk.total.max(1) as f64, barw + 8, sc, st),
-            used = gb_dec(used),
-            tot = gb_dec(disk.total),
-        ),
-        f,
-    );
-    line(
-        format!(
-            "   Free  {free} GB {d}·{z} {pct:.0}% full   {sc}● {word}{z}",
-            free = gb_dec(disk.free),
-        ),
-        f,
-    );
-    if gb_dec(disk.free) < 25 {
+
+    // A usage block per mounted volume (boot + external/data).
+    let render = |title: String, total: u64, free: u64, f: &mut String| {
+        let used = total.saturating_sub(free);
+        let pct = if total > 0 {
+            used as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let (sc, word) = storage_color(st, free, total);
+        line(format!(" {d}{title}{z}"), f);
         line(
-            format!("   {sc}clearing space keeps macOS snappy (it slows below ~10 GB free){z}"),
+            format!(
+                "   Used  {bar}  {used} {d}of{z} {tot} GB",
+                bar = bar_c(used as f64, 0.0, total.max(1) as f64, barw + 8, sc, st),
+                used = gb_dec(used),
+                tot = gb_dec(total),
+            ),
             f,
         );
+        line(
+            format!(
+                "   Free  {free} GB {d}·{z} {pct:.0}% full   {sc}● {word}{z}",
+                free = gb_dec(free),
+            ),
+            f,
+        );
+    };
+
+    if s.volumes.is_empty() {
+        let Some(disk) = &s.disk else {
+            line(format!(" {d}disk info unavailable{z}"), f);
+            return;
+        };
+        render("Startup disk “/”".to_string(), disk.total, disk.free, f);
+        if gb_dec(disk.free) < 25 {
+            let (sc, _) = storage_color(st, disk.free, disk.total);
+            line(
+                format!("   {sc}clearing space keeps macOS snappy (it slows below ~10 GB free){z}"),
+                f,
+            );
+        }
+    } else {
+        for (i, v) in s.volumes.iter().enumerate() {
+            if i > 0 {
+                blank(f);
+            }
+            let title = if v.mount_point == "/" {
+                "Startup disk “/”".to_string()
+            } else {
+                format!("{} {d}({}){z}", v.name, v.mount_point)
+            };
+            render(title, v.total, v.free, f);
+            if v.mount_point == "/" && gb_dec(v.free) < 25 {
+                let (sc, _) = storage_color(st, v.free, v.total);
+                line(
+                    format!(
+                        "   {sc}clearing space keeps macOS snappy (it slows below ~10 GB free){z}"
+                    ),
+                    f,
+                );
+            }
+        }
     }
+
     blank(f);
     if !id.ssd_model.is_empty() {
         line(format!(" {d}The drive{z}    {}", id.ssd_model), f);
@@ -1110,10 +1163,11 @@ fn body_storage(
         } else {
             format!("   {d}{}{z}", id.ssd_medium)
         };
+        let boot_total = s.disk.as_ref().map(|x| x.total).unwrap_or(0);
         line(
             format!(
                 " {d}Capacity{z}     {cap}   {d}({usable} GB usable after formatting){z}{medium}",
-                usable = gb_dec(disk.total),
+                usable = gb_dec(boot_total),
             ),
             f,
         );

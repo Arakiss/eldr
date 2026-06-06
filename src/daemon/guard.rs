@@ -8,8 +8,9 @@
 use crate::config;
 use crate::daemon::cmux;
 use crate::daemon::watchdog::Watchdog;
-use crate::sensors::snapshot::{Level, Snapshot, Thermal};
+use crate::sensors::snapshot::{DiskHealth, Level, Snapshot, Thermal};
 use core::ffi::c_int;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const SAMPLE_MS: u64 = 500;
@@ -61,13 +62,17 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut crit: u32 = 0; // consecutive sustained-critical samples
     let mut fired = false; // one intervention per critical episode
     let mut history: Vec<(f64, u32, f32)> = Vec::new();
+    let mut disk_prev: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut disk_alerted: HashSet<String> = HashSet::new();
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
+        snap.read_smart();
         let _ = snap.write_status();
         push_history(&mut history, &snap);
 
         handle_transitions(&snap, &mut last);
+        watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted);
 
         // Sustained-critical gating for armed interventions.
         if is_critical(&snap) {
@@ -234,6 +239,92 @@ pub fn is_critical(s: &Snapshot) -> bool {
     s.thermal == Thermal::Critical || s.fan_failed()
 }
 
+/// Watch each physical disk for the earliest degradation signals: a firmware SMART
+/// "failing" verdict, or I/O error/retry counters that grow between samples. Notifies
+/// once per disk per episode and clears the latch once the disk reads healthy again, so
+/// a later resurgence re-alerts. This NEVER intervenes — a degrading disk calls for a
+/// human (back up, replace), not an automated action the watchdog could take.
+fn watch_disk_health(
+    s: &Snapshot,
+    prev: &mut HashMap<String, (u64, u64)>,
+    alerted: &mut HashSet<String>,
+) {
+    for h in &s.disk_health {
+        if h.bsd_name.is_empty() {
+            continue;
+        }
+        let cur = (h.errors(), h.retries());
+        let grew = counters_grew(prev.get(&h.bsd_name).copied(), cur);
+        prev.insert(h.bsd_name.clone(), cur);
+        let failing = h.smart_failing();
+        let nvme = h.nvme_alarm();
+        let trigger = failing || nvme.is_some() || grew;
+
+        if trigger && alerted.insert(h.bsd_name.clone()) {
+            let label = if h.model.is_empty() {
+                h.bsd_name.clone()
+            } else {
+                format!("{} ({})", h.model, h.bsd_name)
+            };
+            let (title, body) = if failing {
+                (
+                    format!("eldr · disk {} SMART failing", h.bsd_name),
+                    format!("{label}: firmware predicts failure — back up now."),
+                )
+            } else if let Some(reason) = nvme {
+                (
+                    format!("eldr · disk {} {reason}", h.bsd_name),
+                    format!("{label}: {reason} — back up and check the disk."),
+                )
+            } else {
+                (
+                    format!("eldr · disk {} I/O errors", h.bsd_name),
+                    format!("{label}: errors rising (err {} · retry {}).", cur.0, cur.1),
+                )
+            };
+            log_disk_alert(s, h, failing, nvme, cur);
+            notify_os(&title, &body);
+            cmux::badge_all("DISK", &h.bsd_name, "#f85149");
+        } else if !trigger {
+            alerted.remove(&h.bsd_name);
+        }
+    }
+}
+
+/// True when either error or retry counter rose since the previous sample. A first
+/// sighting (no previous reading) never counts as growth — cumulative counters are only
+/// meaningful as a delta.
+fn counters_grew(prev: Option<(u64, u64)>, cur: (u64, u64)) -> bool {
+    prev.map(|(e, r)| cur.0 > e || cur.1 > r).unwrap_or(false)
+}
+
+fn log_disk_alert(
+    s: &Snapshot,
+    h: &DiskHealth,
+    failing: bool,
+    nvme: Option<&str>,
+    cur: (u64, u64),
+) {
+    let smart = if h.smart.is_empty() {
+        "unknown"
+    } else {
+        h.smart.as_str()
+    };
+    let kind = if failing {
+        "FAILING"
+    } else if nvme.is_some() {
+        "NVME"
+    } else {
+        "ERRORS"
+    };
+    let detail = nvme.map(|r| format!(" nvme=\"{r}\"")).unwrap_or_default();
+    let line = format!(
+        "{} DISK {} {} smart={} err={} retry={}{}\n",
+        s.ts, h.bsd_name, kind, smart, cur.0, cur.1, detail,
+    );
+    append(&config::alerts_path(), &line);
+}
+
 const HISTORY_LEN: usize = 64;
 
 /// Append a telemetry sample and rewrite the rolling history file (≤ `HISTORY_LEN` lines
@@ -250,4 +341,36 @@ fn push_history(hist: &mut Vec<(f64, u32, f32)>, s: &Snapshot) {
         .map(|(c, r, p)| format!("{c:.1},{r},{p:.1}\n"))
         .collect();
     let _ = std::fs::write(config::history_path(), body);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counter_growth_detection() {
+        // First sighting is never "growth": a raw cumulative count says nothing alone.
+        assert!(!counters_grew(None, (5, 2)));
+        // Stable counters between samples: healthy, no alert.
+        assert!(!counters_grew(Some((5, 2)), (5, 2)));
+        // A new read error: growth.
+        assert!(counters_grew(Some((5, 2)), (6, 2)));
+        // A new retry: growth.
+        assert!(counters_grew(Some((5, 2)), (5, 3)));
+        // Counters can't fall on real hardware, but a reset must not false-alarm.
+        assert!(!counters_grew(Some((9, 9)), (0, 0)));
+    }
+
+    #[test]
+    fn smart_failing_is_strict() {
+        let mut h = DiskHealth {
+            smart: "verified".into(),
+            ..Default::default()
+        };
+        assert!(!h.smart_failing());
+        h.smart = "Failing".into();
+        assert!(h.smart_failing());
+        h.smart = "not supported".into();
+        assert!(!h.smart_failing());
+    }
 }

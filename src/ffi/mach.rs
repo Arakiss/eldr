@@ -28,6 +28,14 @@ unsafe extern "C" {
     fn vm_deallocate(target_task: u32, address: usize, size: usize) -> c_int;
     fn getloadavg(loadavg: *mut f64, nelem: c_int) -> c_int;
     fn statfs(path: *const c_char, buf: *mut Statfs) -> c_int;
+    fn getfsstat(buf: *mut Statfs, bufsize: c_int, flags: c_int) -> c_int;
+    fn getattrlist(
+        path: *const c_char,
+        attr_list: *mut c_void,
+        attr_buf: *mut c_void,
+        attr_buf_size: usize,
+        options: u64,
+    ) -> c_int;
     fn getifaddrs(ifap: *mut *mut Ifaddrs) -> c_int;
     fn freeifaddrs(ifa: *mut Ifaddrs);
 }
@@ -445,6 +453,121 @@ pub fn disk(path: &str) -> (u64, u64) {
     }
     let bs = sf.f_bsize as u64;
     (sf.f_blocks * bs, sf.f_bavail * bs)
+}
+
+// MARK: volumes (every mounted filesystem)
+
+/// One mounted filesystem from `getfsstat`. The raw counterpart to the classified
+/// [`crate::sensors::snapshot::VolumeInfo`]; the sensor layer filters and labels these.
+pub struct VolumeStat {
+    pub mount_point: String,
+    pub device: String,
+    pub fs: String,
+    pub total: u64,
+    pub free: u64,
+    pub local: bool,
+    pub read_only: bool,
+    pub browsable: bool,
+}
+
+/// Every mounted filesystem. Uses `MNT_NOWAIT` so it never blocks on a stale network
+/// mount, and over-allocates so a mount appearing mid-call can't truncate the list.
+/// Includes pseudo filesystems (devfs, autofs, system volumes); the caller filters.
+pub fn volumes() -> Vec<VolumeStat> {
+    const MNT_NOWAIT: c_int = 2;
+    const MNT_RDONLY: u32 = 0x0000_0001;
+    const MNT_LOCAL: u32 = 0x0000_1000;
+    const MNT_DONTBROWSE: u32 = 0x0010_0000;
+
+    let n = unsafe { getfsstat(ptr::null_mut(), 0, MNT_NOWAIT) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    let cap = n as usize + 4;
+    let mut bufs: Vec<Statfs> = Vec::with_capacity(cap);
+    let size = (cap * size_of::<Statfs>()) as c_int;
+    let got = unsafe { getfsstat(bufs.as_mut_ptr(), size, MNT_NOWAIT) };
+    if got <= 0 {
+        return Vec::new();
+    }
+    let got = (got as usize).min(cap);
+    unsafe { bufs.set_len(got) };
+
+    bufs.iter()
+        .map(|sf| {
+            let bs = sf.f_bsize as u64;
+            VolumeStat {
+                mount_point: cstr_field(&sf.f_mntonname),
+                device: cstr_field(&sf.f_mntfromname),
+                fs: cstr_field(&sf.f_fstypename),
+                total: sf.f_blocks * bs,
+                free: sf.f_bavail * bs,
+                local: sf.f_flags & MNT_LOCAL != 0,
+                read_only: sf.f_flags & MNT_RDONLY != 0,
+                browsable: sf.f_flags & MNT_DONTBROWSE == 0,
+            }
+        })
+        .collect()
+}
+
+/// The canonical volume name (`ATTR_VOL_NAME` via `getattrlist`) — "Macintosh HD" for
+/// `/`, "Vault" for an external disk — independent of the mount-point path. `None` if
+/// the volume can't be queried.
+pub fn volume_name(mount_point: &str) -> Option<String> {
+    #[repr(C)]
+    struct Attrlist {
+        bitmapcount: u16,
+        reserved: u16,
+        commonattr: u32,
+        volattr: u32,
+        dirattr: u32,
+        fileattr: u32,
+        forkattr: u32,
+    }
+    const ATTR_BIT_MAP_COUNT: u16 = 5;
+    const ATTR_VOL_INFO: u32 = 0x8000_0000;
+    const ATTR_VOL_NAME: u32 = 0x0000_2000;
+
+    let cpath = CString::new(mount_point).ok()?;
+    let mut al = Attrlist {
+        bitmapcount: ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: 0,
+        volattr: ATTR_VOL_INFO | ATTR_VOL_NAME,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    // Reply layout: [u32 total_len][attrreference_t][..name bytes..]. The reference's
+    // dataoffset is measured from the reference's own address (4 bytes into the buffer);
+    // attr_length counts the trailing NUL.
+    let mut buf = [0u8; 512];
+    let rc = unsafe {
+        getattrlist(
+            cpath.as_ptr(),
+            &mut al as *mut _ as *mut c_void,
+            buf.as_mut_ptr() as *mut c_void,
+            buf.len(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let ref_off = 4usize;
+    let data_off = i32::from_ne_bytes(buf.get(ref_off..ref_off + 4)?.try_into().ok()?) as i64;
+    let len = u32::from_ne_bytes(buf.get(ref_off + 4..ref_off + 8)?.try_into().ok()?) as usize;
+    let start = (ref_off as i64 + data_off) as usize;
+    let end = start.checked_add(len.saturating_sub(1))?;
+    let bytes = buf.get(start..end)?;
+    let name = String::from_utf8_lossy(bytes).into_owned();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Read a fixed-size NUL-terminated C string field into an owned `String`.
+fn cstr_field(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
 // MARK: network

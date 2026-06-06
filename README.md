@@ -35,7 +35,7 @@ thermal anomaly.
   Pwr   CPU 13.5 · GPU  0.1 · ANE  0.0 · pkg 13.7 · sys 35.4 W
   Tmp   CPU 88°C · GPU 78°C   fan 1763 rpm (1000–4900)   thermal nominal
   RAM    41.3 / 48.0 GiB  ███████████████░░░  86%
-  Dsk   443.6 GiB / 460.4 GiB used   net ↓13 KB/s ↑46 KB/s
+  Dsk   Macintosh HD 443.6 GiB/460.4 GiB · Vault 39.4 GiB/3.7 TiB   net ↓13 KB/s ↑46 KB/s
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
@@ -77,6 +77,10 @@ eldr writes itself (FFI provenance and acknowledgements in [NOTICE](NOTICE)):
   fan RPM (`F0Ac`, envelope `F0Mn`/`F0Mx`).
 - **mach / sysctl / libproc** for per-core load, RAM/swap, disk, network and the top
   processes.
+- **IOKit block storage** for every mounted volume and per-disk I/O error/retry/latency
+  counters, plus **NVMe SMART** (temperature, wear, bytes written, spare) through the
+  `IONVMeSMARTInterface` plug-in — for the internal SSD and external Thunderbolt-NVMe
+  disks alike.
 - **NSProcessInfo** thermal state via the bare Objective-C runtime — the clean throttle
   signal the watchdog gates on.
 
@@ -115,6 +119,11 @@ eldr tui [--interval N]      tabbed live dashboard — Overview/CPU/Cooling/Memo
                              (←→/Tab/1-7 switch views, space pause, +/- speed, ? help)
 eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
 eldr sensors                 every SMC sensor — temps, fans, power, current, voltage
+eldr disk                    per-volume usage + per-disk health (SMART, I/O errors, NVMe wear)
+
+eldr scrub init <path>       fingerprint a tree (SHA-256) into a manifest
+eldr scrub verify <path>     re-hash; report bit rot, edits, new/missing (--notify to alert)
+eldr scrub status [path]     manifest summary
 
 eldr guard [--interval N]    background monitor -> status.json, alerts, interventions
 eldr guard-stop              stop a running guard
@@ -168,6 +177,39 @@ ELDR_SUSPEND=0       # SIGSTOP the top non-protected CPU hog (auto-SIGCONT)
 ELDR_CONFIRM=3       # consecutive critical samples before acting
 ELDR_DRYRUN=0        # 1 = log only, perform nothing
 ```
+
+## Storage health & integrity
+
+`eldr disk` shows every mounted volume and the health of each physical disk — the
+firmware SMART verdict, I/O error/retry counts, and NVMe wear telemetry where the disk
+exposes it (internal SSD and external Thunderbolt-NVMe alike):
+
+```
+  DISKS
+  disk0  APPLE SSD AP0512Z        internal · SSD · SMART verified · err 0 · retry 0 · 0.2/0.0 ms r/w
+         └ temp 52°C · wear 1% · spare 100% · 45.1 TB written · 1408h on
+  disk4  Samsung SSD 990 PRO 4TB  external · SSD · SMART verified · err 0 · retry 0 · 0.1/0.1 ms r/w
+         └ temp 58°C · wear 0% · spare 100% · 0.1 TB written · 2h on
+```
+
+When the guard is running it watches this passively: it **notifies** (never intervenes on
+a disk) when SMART flips to failing, I/O errors start rising, or the firmware raises an
+NVMe critical warning. `eldr disk` exits `2` on a failing disk, `1` on I/O errors.
+
+The **scrubber** catches what SMART can't — silent corruption (bit rot), a flipped bit on
+disk that nothing reports. APFS checksums its own metadata, not your file data, so the
+only honest detector is to hash the bytes and compare:
+
+```sh
+eldr scrub init   /Volumes/Vault      # fingerprint the tree (SHA-256) into a manifest
+eldr scrub verify /Volumes/Vault      # re-hash; report bit rot, edits, new and missing
+```
+
+The tell of true corruption versus a normal edit: the content changed while size **and**
+modification time stayed identical. `verify` exits `2` and keeps flagging a corrupt file
+until it's restored. For a scheduled scrub, `eldr scrub verify <path> --notify` raises a
+notification and logs to `alerts.log` on corruption (run it from launchd/cron — it stays
+out of the guard's sampling loop, where hashing gigabytes would stall telemetry).
 
 ## Bench discipline
 
