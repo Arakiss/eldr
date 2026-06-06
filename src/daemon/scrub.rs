@@ -8,7 +8,8 @@
 //! is ours.
 
 use crate::config;
-use crate::crypto::sha256::{self, Sha256};
+use crate::crypto::cc::CcSha256;
+use crate::crypto::sha256;
 use crate::sensors::snapshot::SCHEMA_VERSION;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -330,7 +331,7 @@ fn classify(prev: (&str, u64, u64), cur_hash: &str, cur_size: u64, cur_mtime: u6
 fn fingerprint(path: &Path) -> Option<(String, u64, u64)> {
     let md = fs::metadata(path).ok()?;
     let mut f = fs::File::open(path).ok()?;
-    let mut hasher = Sha256::new();
+    let mut hasher = CcSha256::new();
     let mut buf = [0u8; 65536];
     loop {
         let n = f.read(&mut buf).ok()?;
