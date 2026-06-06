@@ -9,6 +9,10 @@ use crate::config;
 use crate::ffi::{battery, iohid, smc, thermal};
 use crate::sensors::{host, soc};
 
+/// status.json / `--json` schema version. Bump on a breaking shape change so an agent
+/// can tell what it's parsing.
+pub const SCHEMA_VERSION: &str = "1";
+
 /// Overall health verdict. Mirrors the bash prototype's OK/WARN/ALERT.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Level {
@@ -95,6 +99,7 @@ pub struct DiskHealth {
     pub bsd_name: String, // "disk4"
     pub model: String,    // "Samsung SSD 990 PRO 4TB"
     pub external: bool,
+    pub interconnect: String, // bus: "PCI-Express" | "USB" | "SATA" | "Apple Fabric"
     pub solid_state: bool,
     pub smart: String, // "verified" | "failing" | "not supported" | "" (unread)
     pub read_errors: u64,
@@ -123,6 +128,7 @@ impl DiskHealth {
             bsd_name: d.bsd_name,
             model: d.model,
             external: d.external,
+            interconnect: d.interconnect,
             solid_state: d.solid_state,
             smart: String::new(),
             read_errors: d.read_errors,
@@ -439,6 +445,22 @@ impl Snapshot {
         self.disk_health.iter().any(|h| h.smart_failing())
     }
 
+    /// Storage exit code for agents: 2 if any disk is SMART-failing or NVMe-critical,
+    /// 1 if any disk shows I/O errors, else 0.
+    pub fn disk_exit_code(&self) -> i32 {
+        if self
+            .disk_health
+            .iter()
+            .any(|h| h.smart_failing() || h.nvme_critical())
+        {
+            2
+        } else if self.disk_health.iter().any(|h| h.errors() > 0) {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Write status.json atomically (temp file + rename) into the data dir.
     pub fn write_status(&self) -> std::io::Result<()> {
         let dir = config::ensure_data_dir();
@@ -451,6 +473,7 @@ impl Snapshot {
     /// Serialize to status.json (hand-rolled; no `serde`). One flat object.
     pub fn to_json(&self) -> String {
         let mut o = JsonObj::new();
+        o.s("schema_version", SCHEMA_VERSION);
         o.s("ts", &self.ts);
         o.s("source", &self.source);
         o.s("level", self.level.as_str());
@@ -556,24 +579,34 @@ impl Snapshot {
             .iter()
             .map(|h| {
                 let nvme = match &h.nvme {
-                    Some(n) => format!(
-                        "{{\"temp_c\":{},\"percentage_used\":{},\"available_spare\":{},\"spare_threshold\":{},\"critical_warning\":{},\"tbw_tb\":{},\"power_on_hours\":{},\"media_errors\":{}}}",
-                        fmt_f(n.temp_c),
-                        n.percentage_used,
-                        n.available_spare,
-                        n.spare_threshold,
-                        n.critical_warning,
-                        fmt_f(n.tbw() as f32),
-                        n.power_on_hours,
-                        n.media_errors,
-                    ),
+                    Some(n) => {
+                        let sensors = n
+                            .temp_sensors
+                            .iter()
+                            .filter(|t| **t > 0.0)
+                            .map(|t| fmt_f(*t))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!(
+                            "{{\"temp_c\":{},\"percentage_used\":{},\"available_spare\":{},\"spare_threshold\":{},\"critical_warning\":{},\"tbw_tb\":{},\"power_on_hours\":{},\"media_errors\":{},\"temp_sensors\":[{sensors}]}}",
+                            fmt_f(n.temp_c),
+                            n.percentage_used,
+                            n.available_spare,
+                            n.spare_threshold,
+                            n.critical_warning,
+                            fmt_f(n.tbw() as f32),
+                            n.power_on_hours,
+                            n.media_errors,
+                        )
+                    }
                     None => "null".to_string(),
                 };
                 format!(
-                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
+                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"interconnect\":\"{}\",\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
                     json_escape(&h.bsd_name),
                     json_escape(&h.model),
                     h.external,
+                    json_escape(&h.interconnect),
                     h.solid_state,
                     json_escape(&h.smart),
                     h.read_errors,
@@ -711,7 +744,7 @@ fn fmt_f(v: f32) -> String {
     }
 }
 
-fn json_escape(s: &str) -> String {
+pub fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -835,6 +868,7 @@ mod tests {
         assert_eq!(j.matches('{').count(), j.matches('}').count());
         assert_eq!(j.matches('[').count(), j.matches(']').count());
         assert!(j.contains("\"level\":\"OK\""));
+        assert!(j.contains("\"schema_version\":\"1\"")); // agent contract version
         assert!(j.contains("\\\"M4\\\"")); // escaped quotes
         assert!(j.contains("a\\\\b")); // escaped backslash
     }

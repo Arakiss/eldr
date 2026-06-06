@@ -13,7 +13,7 @@
 use crate::config::{self, Config};
 use crate::daemon::cmux;
 use crate::ffi::proc;
-use crate::sensors::snapshot::Snapshot;
+use crate::sensors::snapshot::{Snapshot, json_escape};
 use core::ffi::c_int;
 use std::process::Command;
 
@@ -382,6 +382,137 @@ fn git_stash_store(cwd: &str, sha: &str) {
     let _ = git(cwd, &["stash", "store", "-m", &format!("eldr {ts}"), sha]);
 }
 
+// MARK: agent-invoked actions (eldr suspend / resume / checkpoint)
+//
+// The same reversible, safety-gated actions the watchdog can take on its own, exposed as
+// explicit commands an agent (or a person) can call. `suspend` refuses protected targets;
+// `resume` and `checkpoint` are inherently reversible. Nothing here can kill, shut down,
+// or close — the watchdog's hard guarantees hold for the manual path too.
+
+/// `eldr suspend <pid>` — SIGSTOP a process, refusing protected ones (us, agents, core
+/// system / terminal / shell processes by the same denylist the watchdog uses). The
+/// empty agents slice is fine: claude/codex/node are in the name denylist regardless.
+pub fn suspend_pid(pid: i32, json: bool) -> i32 {
+    let name = proc::name_of(pid);
+    if pid <= 1 || pid == unsafe { getpid() } {
+        return action_err(json, "suspend", pid, "refusing to suspend this pid");
+    }
+    if is_protected(pid, &name, &[]) {
+        return action_err(json, "suspend", pid, &format!("{name} is protected"));
+    }
+    if unsafe { kill(pid, SIGSTOP) } == 0 {
+        record_suspended(pid);
+        action_ok(
+            json,
+            "suspend",
+            pid,
+            &name,
+            "SIGSTOP — reverse with: eldr resume <pid>",
+        )
+    } else {
+        action_err(json, "suspend", pid, "SIGSTOP failed (no such process?)")
+    }
+}
+
+/// `eldr resume <pid>` — SIGCONT a process and drop it from the suspended list.
+pub fn resume_pid(pid: i32, json: bool) -> i32 {
+    let name = proc::name_of(pid);
+    if unsafe { kill(pid, SIGCONT) } == 0 {
+        unrecord_suspended(pid);
+        action_ok(json, "resume", pid, &name, "SIGCONT")
+    } else {
+        action_err(json, "resume", pid, "SIGCONT failed (no such process?)")
+    }
+}
+
+/// `eldr checkpoint <path>` — non-destructive `git stash create` snapshot of a dirty
+/// repo. The working tree is left untouched; recover with the printed `stash apply`.
+pub fn checkpoint_path(path: &str, json: bool) -> i32 {
+    if !is_git_worktree(path) {
+        return action_path_err(json, path, "not a git work tree");
+    }
+    if !is_dirty(path) {
+        return action_path_err(json, path, "nothing to checkpoint (clean tree)");
+    }
+    match git_stash_create(path) {
+        Some(sha) => {
+            git_stash_store(path, &sha);
+            let short = &sha[..sha.len().min(12)];
+            if json {
+                println!(
+                    "{{\"action\":\"checkpoint\",\"ok\":true,\"path\":\"{}\",\"sha\":\"{}\",\"recover\":\"git -C {} stash apply {}\"}}",
+                    json_escape(path),
+                    short,
+                    json_escape(path),
+                    short,
+                );
+            } else {
+                println!(
+                    "checkpoint {path} -> {short}\n  recover: git -C {path} stash apply {short}"
+                );
+            }
+            0
+        }
+        None => action_path_err(json, path, "git stash create produced nothing"),
+    }
+}
+
+fn action_ok(json: bool, action: &str, pid: i32, name: &str, detail: &str) -> i32 {
+    if json {
+        println!(
+            "{{\"action\":\"{action}\",\"ok\":true,\"pid\":{pid},\"name\":\"{}\",\"detail\":\"{}\"}}",
+            json_escape(name),
+            json_escape(detail),
+        );
+    } else {
+        println!("{action} {pid} ({name}) — {detail}");
+    }
+    0
+}
+
+fn action_err(json: bool, action: &str, pid: i32, msg: &str) -> i32 {
+    if json {
+        println!(
+            "{{\"action\":\"{action}\",\"ok\":false,\"pid\":{pid},\"error\":\"{}\"}}",
+            json_escape(msg),
+        );
+    } else {
+        eprintln!("eldr {action}: pid {pid}: {msg}");
+    }
+    1
+}
+
+fn action_path_err(json: bool, path: &str, msg: &str) -> i32 {
+    if json {
+        println!(
+            "{{\"action\":\"checkpoint\",\"ok\":false,\"path\":\"{}\",\"error\":\"{}\"}}",
+            json_escape(path),
+            json_escape(msg),
+        );
+    } else {
+        eprintln!("eldr checkpoint: {path}: {msg}");
+    }
+    1
+}
+
+/// Drop a single pid from the suspended-pids file (the counterpart to [`record_suspended`]
+/// for the manual `resume` path; [`Watchdog::unintervene`] clears them all at once).
+fn unrecord_suspended(pid: i32) {
+    let path = config::data_dir().join("suspended.pids");
+    let Ok(txt) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let kept: Vec<&str> = txt
+        .lines()
+        .filter(|l| l.trim().parse::<i32>().ok() != Some(pid))
+        .collect();
+    if kept.is_empty() {
+        let _ = std::fs::remove_file(&path);
+    } else {
+        let _ = std::fs::write(&path, format!("{}\n", kept.join("\n")));
+    }
+}
+
 fn record_suspended(pid: i32) {
     use std::io::Write;
     let path = config::ensure_data_dir().join("suspended.pids");
@@ -404,5 +535,22 @@ fn wlog(msg: &str) {
         .open(config::actions_path())
     {
         let _ = writeln!(f, "{ts}  {msg}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protected_refuses_agents_shells_and_low_pids() {
+        // The denylist (with no explicit agents slice) still guards what `eldr suspend`
+        // must never stop: agents, shells/terminals, and pid 0/1.
+        assert!(is_protected(4242, "claude", &[]));
+        assert!(is_protected(4242, "codex", &[]));
+        assert!(is_protected(4242, "zsh", &[]));
+        assert!(is_protected(1, "launchd", &[]));
+        // An ordinary heavy job is fair game.
+        assert!(!is_protected(4242, "ffmpeg", &[]));
     }
 }

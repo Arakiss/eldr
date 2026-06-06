@@ -319,7 +319,6 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
         }
     }
 
-    let mut code = 0;
     if !s.disk_health.is_empty() {
         println!("\n  {d}DISKS{z}");
         for h in &s.disk_health {
@@ -328,8 +327,13 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
             let ec = if errs > 0 { st.red } else { st.dim };
             let loc = if h.external { "external" } else { "internal" };
             let medium = if h.solid_state { "SSD" } else { "HDD" };
+            let bus = if h.interconnect.is_empty() {
+                String::new()
+            } else {
+                format!("{} · ", h.interconnect)
+            };
             println!(
-                "  {d}{bsd:<6}{z} {model:<24} {d}{loc} · {medium} ·{z} SMART {sc}{sword}{z} {d}·{z} {ec}err {errs} · retry {retr}{z} {d}· {rl:.1}/{wl:.1} ms r/w{z}",
+                "  {d}{bsd:<6}{z} {model:<24} {d}{loc} · {bus}{medium} ·{z} SMART {sc}{sword}{z} {d}·{z} {ec}err {errs} · retry {retr}{z} {d}· {rl:.1}/{wl:.1} ms r/w{z}",
                 bsd = h.bsd_name,
                 model = trunc(&h.model, 24),
                 rl = h.read_latency_ms,
@@ -341,8 +345,25 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
                 } else {
                     st.dim
                 };
+                // Extra on-die sensors (controller/NAND), where the drive reports them.
+                let extra: Vec<String> = n
+                    .temp_sensors
+                    .iter()
+                    .filter(|t| **t > 0.0)
+                    .map(|t| format!("{t:.0}°"))
+                    .collect();
+                let sensors = if extra.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " {d}·{z} sensors {}",
+                        extra.join("/"),
+                        d = st.dim,
+                        z = st.reset
+                    )
+                };
                 println!(
-                    "         {d}└{z} {warn}temp {temp:.0}°C{z} {d}·{z} {wc}wear {used}%{z} {d}·{z} spare {spare}% {d}·{z} {tbw:.1} TB written {d}·{z} {poh}h on",
+                    "         {d}└{z} {warn}temp {temp:.0}°C{z} {d}·{z} {wc}wear {used}%{z} {d}·{z} spare {spare}% {d}·{z} {tbw:.1} TB written {d}·{z} {poh}h on{sensors}",
                     temp = n.temp_c,
                     used = n.percentage_used,
                     spare = n.available_spare,
@@ -355,15 +376,10 @@ pub fn disk_panel(s: &Snapshot) -> i32 {
                     },
                 );
             }
-            if h.smart_failing() || h.nvme_critical() {
-                code = code.max(2);
-            } else if errs > 0 {
-                code = code.max(1);
-            }
         }
     }
     println!();
-    code
+    s.disk_exit_code()
 }
 
 /// Truncate to `n` characters (char-safe), adding an ellipsis when clipped.
@@ -394,6 +410,35 @@ fn smart_word(st: &Style, smart: &str) -> (&'static str, &'static str) {
         "not supported" => (st.dim, "n/a"),
         _ => (st.dim, "unknown"),
     }
+}
+
+/// Every SMC sensor as a JSON object `{schema_version, sensors:[{key,value,unit,group}]}`.
+/// Shared by `eldr sensors --json` and the MCP `get_sensors` tool.
+pub fn sensors_json_string() -> String {
+    use crate::sensors::snapshot::json_escape;
+    let sensors = smc::all_sensors();
+    let items = sensors
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"key\":\"{}\",\"value\":{:.3},\"unit\":\"{}\",\"group\":\"{}\"}}",
+                json_escape(&s.key),
+                s.value,
+                json_escape(s.group.unit()),
+                json_escape(s.group.title()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"schema_version\":\"{}\",\"sensors\":[{items}]}}",
+        crate::sensors::snapshot::SCHEMA_VERSION
+    )
+}
+
+/// `eldr sensors --json`.
+pub fn sensors_json() {
+    println!("{}", sensors_json_string());
 }
 
 /// `eldr check` — one terse line; the caller exits with `s.level.exit_code()`.

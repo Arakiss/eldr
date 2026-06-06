@@ -2,9 +2,11 @@
 //! library. The library does the work; `main` only routes and sets exit codes.
 
 use eldr::daemon::{bench, guard, launchd, scrub, watchdog};
+use eldr::mcp;
 use eldr::sensors::snapshot::Snapshot;
 use eldr::sensors::system::SystemInfo;
 use eldr::ui::{pretty, tui};
+use eldr::watch;
 
 /// Default IOReport sampling window for one-shot readings (`now`/`status`/`check`).
 const DEFAULT_SAMPLE_MS: u64 = 500;
@@ -20,6 +22,7 @@ READINGS
     check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
     status                  panel (live, or last guard sample)
     tui [--interval N]      live self-refreshing dashboard
+    watch [--interval N]    stream one line per sample (--json = NDJSON) — for agents
     disk                    per-volume usage + per-disk health (SMART, I/O errors)
     system                  static machine identity (model, serial, macOS, SSD)
     sensors                 every SMC sensor — temps, fans, power, current, voltage
@@ -31,17 +34,27 @@ GUARD
     guard-uninstall         remove the launchd agent
     watchdog-test           dry-run: show exactly what an intervention would do
 
+ACTIONS (reversible; for agents)
+    suspend <pid>           SIGSTOP a process (refuses protected ones)
+    resume <pid>            SIGCONT a suspended process
+    checkpoint <path>       non-destructive git stash-create snapshot of a dirty repo
+
 INTEGRITY
     scrub init <path>       fingerprint a tree (SHA-256) into a manifest
     scrub verify <path>     re-hash and report bit rot, edits, new/missing
                             (--notify alerts on corruption for scheduled runs)
     scrub status [path]     manifest summary
 
+AGENTS
+    mcp                     MCP server over stdio (JSON-RPC) for Claude Code / Codex
+
 EXPERIMENT
     bench <label> [opts]    controlled load -> steady state
     report <label>          steady-state summary
     compare <a> <b>         iso-load delta + verdict
 
+    --json                  machine-readable JSON on stdout (now/status/check/disk/
+                            system/sensors/scrub) — for agents
     -h, --help              this help
     -V, --version           print version";
 
@@ -62,6 +75,11 @@ fn opt<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(|s| s.as_str())
 }
 
+/// True when `--json` is present — machine-readable output to stdout, for agents.
+fn json_wanted(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--json")
+}
+
 fn dispatch(cmd: &str, rest: &[String]) -> i32 {
     match cmd {
         "tui" => {
@@ -73,36 +91,60 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
             tui::run(ms);
             0
         }
-        "now" => {
+        "watch" => {
+            // --interval in seconds; the sample window doubles as the cadence.
+            let secs = opt(rest, "--interval")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(2.0);
+            let ms = (secs * 1000.0).max(250.0) as u64;
+            watch::run(ms, json_wanted(rest))
+        }
+        "now" | "status" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             let _ = snap.write_status();
-            pretty::panel(&snap, "(live)");
+            if json_wanted(rest) {
+                println!("{}", snap.to_json());
+            } else {
+                pretty::panel(&snap, "(live)");
+            }
             0
         }
         "system" => {
-            SystemInfo::get().render();
+            let info = SystemInfo::get();
+            if json_wanted(rest) {
+                println!("{}", info.to_json());
+            } else {
+                info.render();
+            }
             0
         }
         "disk" => {
             let mut snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             snap.read_smart();
             let _ = snap.write_status();
-            pretty::disk_panel(&snap)
+            if json_wanted(rest) {
+                println!("{}", snap.to_json());
+                snap.disk_exit_code()
+            } else {
+                pretty::disk_panel(&snap)
+            }
         }
         "sensors" => {
-            pretty::sensors_panel();
-            0
-        }
-        "status" => {
-            let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
-            let _ = snap.write_status();
-            pretty::panel(&snap, "(live)");
+            if json_wanted(rest) {
+                pretty::sensors_json();
+            } else {
+                pretty::sensors_panel();
+            }
             0
         }
         "check" => {
             let snap = Snapshot::gather(DEFAULT_SAMPLE_MS);
             let _ = snap.write_status();
-            pretty::check_line(&snap);
+            if json_wanted(rest) {
+                println!("{}", snap.to_json());
+            } else {
+                pretty::check_line(&snap);
+            }
             snap.level.exit_code()
         }
         "-h" | "--help" | "help" => {
@@ -130,6 +172,29 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         "guard-install" => launchd::install(),
         "guard-uninstall" => launchd::uninstall(),
         "watchdog-test" => watchdog::test_report(),
+        "mcp" => mcp::run(),
+        "suspend" | "resume" => {
+            let Some(pid) = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
+                .and_then(|s| s.parse::<i32>().ok())
+            else {
+                eprintln!("usage: eldr {cmd} <pid>");
+                return 2;
+            };
+            if cmd == "suspend" {
+                watchdog::suspend_pid(pid, json_wanted(rest))
+            } else {
+                watchdog::resume_pid(pid, json_wanted(rest))
+            }
+        }
+        "checkpoint" => {
+            let Some(path) = rest.iter().find(|a| !a.starts_with("--")) else {
+                eprintln!("usage: eldr checkpoint <path>");
+                return 2;
+            };
+            watchdog::checkpoint_path(path, json_wanted(rest))
+        }
         "scrub" => scrub::run(rest),
         "bench" => {
             let Some(label) = rest.iter().find(|a| !a.starts_with("--")) else {
