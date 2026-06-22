@@ -111,7 +111,18 @@ pub(super) fn render_styled(
 
     // ---- body ----
     match ui.tab {
-        0 => views::body_overview(s, h, id, &st, w, &line, &blank, &mut f),
+        0 => views::body_overview(
+            s,
+            h,
+            id,
+            &st,
+            w,
+            ncols,
+            rows as usize,
+            &line,
+            &blank,
+            &mut f,
+        ),
         1 => views::body_cpu(s, h, &st, w, ncols, &line, &blank, &mut f),
         2 => views::body_cooling(s, h, &st, w, ncols, &line, &blank, &mut f),
         3 => views::body_memory(s, &st, w, ncols, &line, &blank, &mut f),

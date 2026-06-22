@@ -3,8 +3,9 @@
 //! an identical header/footer; only the body swaps, like a segmented control. The width
 //! tracks the terminal (up to 400 columns) so a wide screen fills with high-resolution
 //! braille charts; narrow terminals fall back to a single stacked column. The Overview
-//! is a Banner HUD — full-width lanes (label · big figure · braille chart · stats), fire
-//! palette. Sampling runs off-thread so keys and quit are instant. Keys: `q`/Ctrl-C quit,
+//! is a dashboard wall — four tall braille charts (CPU·GPU·PWR·NET) filling the height
+//! over a band of compact panels, degrading to compact single-row lanes when narrow.
+//! Sampling runs off-thread so keys and quit are instant. Keys: `q`/Ctrl-C quit,
 //! `←/→` or `Tab` or `1`-`7` switch view, `space` pause, `+`/`-` speed, `?` help.
 //!
 //! The module is split by concern: this file owns the engine (sampling loop, key

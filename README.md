@@ -23,10 +23,10 @@ Apple's own tools do, and — when armed — takes **reversible** action on a su
 thermal anomaly.
 
 <p align="center">
-  <img src="assets/eldr-tui-wide.svg" alt="eldr's Banner HUD Overview on a wide terminal — full-width braille area charts for CPU, GPU, power and network, health-gradient bars for memory and heat, with a red callout flagging a resource hog" width="100%" />
+  <img src="assets/eldr-tui-wide.svg" alt="eldr's dashboard-wall Overview on a wide terminal — four tall braille area charts for CPU, GPU, power and network filling the height, a band of compact panels (memory, heat, cores, top processes) below, and a red callout flagging a resource hog" width="100%" />
 </p>
 
-<p align="center"><sub><code>eldr tui</code> — the Banner HUD Overview, responsive to the full terminal width (here ~200 columns). Below it cycles through seven tabbed views:</sub></p>
+<p align="center"><sub><code>eldr tui</code> — the Overview as a dashboard wall: on a wide screen the charts grow to fill the whole panel (height and width), tuned for an ultra-wide always-on monitor; it degrades to compact single-row lanes on a laptop. Below it cycles through seven tabbed views:</sub></p>
 
 <p align="center">
   <img src="assets/eldr-demo.gif" alt="eldr's live TUI cycling through its tabs — Overview, CPU, Cooling, Memory, Energy, Battery — with colour-coded bars" width="100%" />
@@ -126,7 +126,7 @@ eldr now                     one-shot snapshot
 eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
 eldr status                  panel (live, or the last guard sample)
 eldr tui [--interval N]      responsive live dashboard — Overview/CPU/Cooling/Memory/Energy/Battery/Storage
-                             (a Banner HUD that fills the terminal width; ←→/Tab/1-7 switch, space pause, +/- speed, ? help)
+                             (a dashboard wall that fills the whole screen; ←→/Tab/1-7 switch, space pause, +/- speed, ? help)
 eldr watch [--interval N]    stream one line per sample (--json = NDJSON) — for agents
 eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
 eldr sensors                 every SMC sensor — temps, fans, power, current, voltage

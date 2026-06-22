@@ -1,15 +1,16 @@
 //! The seven tab bodies. Each takes the panel width (and a column count for the
 //! multi-column tabs) plus the `line`/`blank` sinks from [`super::frame`], and fills the
 //! middle of the frame. Charts come from [`crate::ui::chart`]; text and colour from
-//! [`super::fmt`]. The Overview is the Banner HUD; the rest fan out into `ncols` columns
-//! when there's room and stack to one column when narrow.
+//! [`super::fmt`]. The Overview is a dashboard wall on a wide screen (tall charts filling
+//! the height) and falls back to compact lanes when narrow; the rest fan out into `ncols`
+//! columns when there's room and stack to one column when narrow.
 
 use super::fmt::*;
 use super::frame::{BlankFn, LineFn};
 use super::{Hist, Ident};
 use crate::sensors::snapshot::{HOG_CPU_PCT, HOG_RAM_FRAC, Snapshot};
 use crate::ui::chart;
-use crate::ui::style::{Style, bar_c};
+use crate::ui::style::{Style, bar_c, sparkline};
 
 // MARK: Banner HUD lane
 
@@ -53,16 +54,31 @@ pub(super) fn body_overview(
     id: &Ident,
     st: &Style,
     w: usize,
+    ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
 ) {
+    overview_callout(s, st, line, f);
+    blank(f);
+    // Wide screens get the dashboard wall (big charts filling the height); narrow ones
+    // fall back to the compact single-row lanes.
+    if ncols >= 2 {
+        overview_wall(s, h, st, w, rows, line, f);
+    } else {
+        overview_lanes(s, h, st, w, line, blank, f);
+    }
+    let _ = id;
+}
+
+/// Lead the Overview with a red callout when something is hogging the machine —
+/// glanceable on an always-on panel — otherwise the calm status line.
+fn overview_callout(s: &Snapshot, st: &Style, line: &LineFn, f: &mut String) {
     let d = st.dim;
     let z = st.reset;
     let r = st.red;
     let (_head, sub) = human_status(s);
-    // When something is hogging the machine, lead with a red callout — glanceable on an
-    // always-on wide panel. Otherwise the calm status line.
     let cpu_hog = s.top_procs.iter().find(|p| p.cpu >= HOG_CPU_PCT);
     let ram_hog = s
         .top_mem
@@ -93,11 +109,199 @@ pub(super) fn body_overview(
             f,
         );
     }
-    blank(f);
+}
 
+/// Dashboard wall for wide/short screens: four tall braille charts (CPU·GPU·PWR·NET)
+/// that grow to fill the vertical space, then a band of compact panels and the process
+/// and disk summaries — so the whole 32:9 panel is used, not just the top strip.
+fn overview_wall(
+    s: &Snapshot,
+    h: &Hist,
+    st: &Style,
+    w: usize,
+    rows: usize,
+    line: &LineFn,
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let b = st.bold;
+    let gutter = 2;
+    let cells = (w.saturating_sub(1).saturating_sub(3 * gutter)) / 4;
+
+    // Grow the top charts to fill the height left after the chrome, callout, rule, and
+    // the bottom panel band (panels 4 + TOP RAM + DISK = 6, plus chart title + stat).
+    let reserved =
+        4 /*header*/ + 2 /*footer*/ + 2 /*callout+blank*/ + 1 /*rule*/ + 6 /*bottom*/ + 2;
+    let chart_h = rows.saturating_sub(reserved).clamp(3, 24);
+
+    let (_cmn, cmx) = min_max(&h.cpu);
+    let (_pmn, pmx) = min_max(&h.pwr);
+    let (_nmn, nmx) = min_max(&h.net_rx);
+    let rx = s.net.as_ref().map(|n| n.rx_rate).unwrap_or(0.0);
+    let txr = s.net.as_ref().map(|n| n.tx_rate).unwrap_or(0.0);
+
+    let chart = |title: &str, hero: String, stat: String, data: &[f64], lo: f64, hi: f64| {
+        let mut v = Vec::with_capacity(chart_h + 2);
+        v.push(format!("{d}{title}{z}  {b}{fire}{hero}{z}", fire = st.fire));
+        for row in chart::braille_area(data, lo, hi, cells, chart_h, st.fire, st) {
+            v.push(row);
+        }
+        v.push(format!("{d}{stat}{z}"));
+        v
+    };
+    let cpu = chart(
+        "CPU",
+        format!("{:.0}%", s.cpu_load_pct * 100.0),
+        format!(
+            "now {:.0}% · max {:.0}% · {:.1}/{:.1}GHz",
+            s.cpu_load_pct * 100.0,
+            cmx,
+            s.pcpu_freq_mhz as f64 / 1000.0,
+            s.ecpu_freq_mhz as f64 / 1000.0,
+        ),
+        &h.cpu,
+        0.0,
+        100.0,
+    );
+    let gpu = chart(
+        "GPU",
+        format!("{:.0}%", s.gpu_active * 100.0),
+        format!(
+            "{:.1} GHz · {:.0}°",
+            s.gpu_freq_mhz as f64 / 1000.0,
+            s.gpu_temp
+        ),
+        &h.gpu,
+        0.0,
+        100.0,
+    );
+    let pwr = chart(
+        "PWR",
+        format!("{:.0} W", s.sys_power),
+        format!("chip {:.0}W · peak {:.0}", s.all_power, pmx),
+        &h.pwr,
+        0.0,
+        pmx.max(1.0),
+    );
+    let net = chart(
+        "NET",
+        format!("↓{}", fmt_rate(rx)),
+        format!("↓{} · ↑{}", fmt_rate(rx), fmt_rate(txr)),
+        &h.net_rx,
+        0.0,
+        nmx.max(1.0),
+    );
+    for l in chart::columns(&[cpu, gpu, pwr, net], gutter, st) {
+        line(format!(" {l}"), f);
+    }
+
+    let rule = "─".repeat(w.saturating_sub(2));
+    line(format!(" {d}{rule}{z}"), f);
+
+    // Bottom band: compact panels (memory · heat · cores · top CPU), then the wide
+    // process and disk summaries that naturally span the width.
+    let press = s.mem_pressure();
+    let pc = pressure_color(st, press);
+    let app = s.ram_used.saturating_sub(s.ram_wired + s.ram_compressed);
+    let barw = (w / 4).saturating_sub(12).clamp(8, 28);
+    let mem = vec![
+        format!(
+            "{d}MEM{z} {pc}{:.0}%{z}",
+            s.ram_used as f64 / s.ram_total.max(1) as f64 * 100.0
+        ),
+        format!(
+            "{} {d}{:.0}/{:.0}{z}",
+            chart::bar_grad(s.ram_used as f64, 0.0, s.ram_total.max(1) as f64, barw, st),
+            gib(s.ram_used),
+            gib(s.ram_total),
+        ),
+        format!(
+            "{d}app {:.0} wir {:.0} cmp {:.0}{z}",
+            gib(app),
+            gib(s.ram_wired),
+            gib(s.ram_compressed),
+        ),
+        format!(
+            "{d}swap {:.0}/{:.0} · {press}{z}",
+            gib(s.swap_used),
+            gib(s.swap_total),
+        ),
+    ];
+    let tc = thermal_color(st, s.thermal);
+    let tbar = barw.saturating_sub(6).max(6);
+    let fan = if s.fan_rpm > 0 {
+        format!("{d}fan {} rpm{z}", s.fan_rpm)
+    } else {
+        format!("{d}fan idle (cool){z}")
+    };
+    let heat = vec![
+        format!("{d}HEAT{z} {tc}{}{z}", s.thermal.as_str()),
+        format!(
+            "{d}CPU{z} {} {:.0}°",
+            chart::bar_grad(s.cpu_temp as f64, 30.0, 105.0, tbar, st),
+            s.cpu_temp,
+        ),
+        format!(
+            "{d}GPU{z} {} {:.0}°",
+            chart::bar_grad(s.gpu_temp as f64, 30.0, 105.0, tbar, st),
+            s.gpu_temp,
+        ),
+        fan,
+    ];
+    let p = s.p_cores as usize;
+    let pcore: Vec<f64> = s.per_core.iter().take(p).map(|&x| x as f64).collect();
+    let ecore: Vec<f64> = s.per_core.iter().skip(p).map(|&x| x as f64).collect();
+    let cores = vec![
+        format!("{d}CORES{z} {d}{}P+{}E{z}", s.p_cores, s.e_cores),
+        format!("{d}P{z} {}{}{z}", st.fire, sparkline(&pcore, 0.0, 1.0)),
+        format!("{d}E{z} {}{}{z}", st.fire, sparkline(&ecore, 0.0, 1.0)),
+        format!(
+            "{d}{:.1}/{:.1} GHz{z}",
+            s.pcpu_freq_mhz as f64 / 1000.0,
+            s.ecpu_freq_mhz as f64 / 1000.0,
+        ),
+    ];
+    let mut top = vec![format!("{d}TOP CPU{z}")];
+    for p in s.top_procs.iter().take(3) {
+        let col = if p.cpu >= HOG_CPU_PCT {
+            st.red
+        } else if p.cpu >= 100.0 {
+            st.fire
+        } else {
+            z
+        };
+        top.push(format!(
+            "{col}{}{z} {d}{:.0}%{z}",
+            clean_proc(&p.name),
+            p.cpu
+        ));
+    }
+    while top.len() < 4 {
+        top.push(String::new());
+    }
+    for l in chart::columns(&[mem, heat, cores, top], gutter, st) {
+        line(format!(" {l}"), f);
+    }
+    line(format!(" {d}TOP RAM{z}  {}", procs_mem(s, st, 8)), f);
+    line(format!(" {d}DISK{z}     {}", storage_summary(s, st)), f);
+}
+
+/// Compact single-row HUD lanes — the fallback for narrow terminals (laptop width),
+/// where four charts side by side won't fit.
+fn overview_lanes(
+    s: &Snapshot,
+    h: &Hist,
+    st: &Style,
+    w: usize,
+    line: &LineFn,
+    blank: &BlankFn,
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
     let midw = lane_midw(w);
 
-    // CPU — fire activity, history area.
     let cpu_mid = chart::braille_area(&h.cpu, 0.0, 100.0, midw, 1, st.fire, st);
     line(
         lane(
@@ -115,7 +319,6 @@ pub(super) fn body_overview(
         ),
         f,
     );
-    // GPU — fire activity.
     let gpu_mid = chart::braille_area(&h.gpu, 0.0, 100.0, midw, 1, st.fire, st);
     line(
         lane(
@@ -132,7 +335,6 @@ pub(super) fn body_overview(
         ),
         f,
     );
-    // MEM — health gradient by used fraction.
     let press = s.mem_pressure();
     let pc = pressure_color(st, press);
     let mem_mid = chart::bar_grad(s.ram_used as f64, 0.0, s.ram_total.max(1) as f64, midw, st);
@@ -154,7 +356,6 @@ pub(super) fn body_overview(
         ),
         f,
     );
-    // HEAT — health gradient over the operating range; the thermal word carries truth.
     let tc = thermal_color(st, s.thermal);
     let heat_mid = chart::bar_grad(s.cpu_temp as f64, 30.0, 105.0, midw, st);
     line(
@@ -168,7 +369,6 @@ pub(super) fn body_overview(
         ),
         f,
     );
-    // PWR — fire activity, history area scaled to its own peak.
     let (_pmn, pmx) = min_max(&h.pwr);
     let pwr_mid = chart::braille_area(&h.pwr, 0.0, pmx.max(1.0), midw, 1, st.fire, st);
     line(
@@ -182,7 +382,6 @@ pub(super) fn body_overview(
         ),
         f,
     );
-    // NET — download area; both rates on the right.
     let rx = s.net.as_ref().map(|n| n.rx_rate).unwrap_or(0.0);
     let txr = s.net.as_ref().map(|n| n.tx_rate).unwrap_or(0.0);
     let (_nmn, nmx) = min_max(&h.net_rx);
@@ -202,12 +401,9 @@ pub(super) fn body_overview(
     blank(f);
     let rule = "─".repeat(w.saturating_sub(2));
     line(format!(" {d}{rule}{z}"), f);
-
-    // TOP processes (horizontal — saves vertical space on a low panel) + disk summary.
     line(format!(" {d}TOP CPU{z}   {}", procs_cpu(s, st, 8)), f);
     line(format!(" {d}TOP RAM{z}   {}", procs_mem(s, st, 8)), f);
     line(format!(" {d}DISK{z}      {}", storage_summary(s, st)), f);
-    let _ = id;
 }
 
 #[allow(clippy::too_many_arguments)]
