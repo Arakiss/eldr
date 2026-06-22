@@ -56,6 +56,8 @@ unsafe extern "C" {
     fn poll(fds: *mut Pollfd, nfds: u32, timeout: c_int) -> c_int;
     fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
     fn ioctl(fd: c_int, request: u64, arg: *mut Winsize) -> c_int;
+    fn open(path: *const core::ffi::c_char, flags: c_int) -> c_int;
+    fn close(fd: c_int) -> c_int;
 }
 
 /// RAII raw-mode guard. Enter switches to raw mode + alternate screen + hidden
@@ -117,21 +119,67 @@ pub fn read_key(timeout_ms: i32) -> Option<u8> {
     if n == 1 { Some(byte) } else { None }
 }
 
-/// Terminal size as `(cols, rows)`. Falls back to `(80, 24)` when stdout is not a
-/// tty (pipes, tests) or the ioctl fails.
+/// Terminal size as `(cols, rows)`. Tries, in order: an explicit `ELDR_COLS`/`ELDR_ROWS`
+/// override (a workaround for terminals/multiplexers whose `TIOCGWINSZ` misreports, and a
+/// way to pin a size); `TIOCGWINSZ` on stdout, stdin, then stderr; the controlling
+/// terminal `/dev/tty` directly (in case 0/1/2 are redirected); the shell's exported
+/// `COLUMNS`/`LINES`; and finally `(80, 24)`. The multi-fd + `/dev/tty` path matters
+/// because some setups answer the ioctl on one descriptor but not stdout.
 pub fn size() -> (u16, u16) {
+    if let (Some(c), Some(r)) = (env_u16("ELDR_COLS"), env_u16("ELDR_ROWS")) {
+        return (c, r);
+    }
+    if let Some(sz) = ioctl_size(1)
+        .or_else(|| ioctl_size(0))
+        .or_else(|| ioctl_size(2))
+    {
+        return sz;
+    }
+    if let Some(sz) = tty_size() {
+        return sz;
+    }
+    if let (Some(c), Some(r)) = (env_u16("COLUMNS"), env_u16("LINES")) {
+        return (c, r);
+    }
+    (80, 24)
+}
+
+/// `TIOCGWINSZ` on one descriptor, `None` unless it answers with a real size.
+fn ioctl_size(fd: c_int) -> Option<(u16, u16)> {
     let mut ws = Winsize {
         row: 0,
         col: 0,
         xpixel: 0,
         ypixel: 0,
     };
-    let rc = unsafe { ioctl(1, TIOCGWINSZ, &mut ws) };
+    let rc = unsafe { ioctl(fd, TIOCGWINSZ, &mut ws) };
     if rc == 0 && ws.col > 0 && ws.row > 0 {
-        (ws.col, ws.row)
+        Some((ws.col, ws.row))
     } else {
-        (80, 24)
+        None
     }
+}
+
+/// Query the controlling terminal directly, for when 0/1/2 are pipes/redirected.
+fn tty_size() -> Option<(u16, u16)> {
+    let fd = unsafe {
+        open(c"/dev/tty".as_ptr(), 0 /* O_RDONLY */)
+    };
+    if fd < 0 {
+        return None;
+    }
+    let sz = ioctl_size(fd);
+    unsafe { close(fd) };
+    sz
+}
+
+fn env_u16(key: &str) -> Option<u16> {
+    std::env::var(key)
+        .ok()?
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|&v| v > 0)
 }
 
 /// Move the cursor home (top-left) without clearing — frames overwrite in place.
@@ -147,4 +195,21 @@ pub fn clear_eol() -> &'static str {
 /// Clear from cursor to end of screen.
 pub fn clear_eos() -> &'static str {
     "\x1b[J"
+}
+
+#[cfg(test)]
+mod size_tests {
+    #[test]
+    fn override_wins() {
+        // SAFETY: single-threaded test process.
+        unsafe {
+            std::env::set_var("ELDR_COLS", "220");
+            std::env::set_var("ELDR_ROWS", "28");
+        }
+        assert_eq!(super::size(), (220, 28));
+        unsafe {
+            std::env::remove_var("ELDR_COLS");
+            std::env::remove_var("ELDR_ROWS");
+        }
+    }
 }
