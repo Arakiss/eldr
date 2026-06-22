@@ -18,10 +18,12 @@ const DOT: [[u8; 4]; 2] = [
 ];
 
 /// A filled "mountain" area chart in braille. `w_cells` wide × `h_rows` tall cells give
-/// `2·w_cells` horizontal samples and `4·h_rows` vertical levels. Renders the tail of
-/// `vals` (newest at the right), each column filled from the baseline up to its value
-/// scaled across `[lo, hi]`. Returns exactly `h_rows` lines, each `w_cells` visible
-/// columns wide (top row first), painted `color`.
+/// `2·w_cells` horizontal samples and `4·h_rows` vertical levels. Each column is filled
+/// from the baseline up to its value scaled across `[lo, hi]`. With at least `2·w_cells`
+/// samples it shows the most recent ones (newest at the right); with fewer it stretches
+/// what it has across the full width, so the chart fills immediately and densifies as more
+/// samples arrive rather than creeping in from the right edge. Returns exactly `h_rows`
+/// lines, each `w_cells` visible columns wide (top row first), painted `color`.
 pub fn braille_area(
     vals: &[f64],
     lo: f64,
@@ -40,19 +42,27 @@ pub fn braille_area(
     // grid[row][cell] accumulates dot bits; row 0 is the top.
     let mut grid = vec![vec![0u8; w_cells]; h_rows];
 
-    // Right-align the last `sub_cols` samples; the left side stays empty if we have fewer.
     let n = vals.len();
-    let take = n.min(sub_cols);
-    let pad = sub_cols - take;
-    for x in pad..sub_cols {
-        let v = vals[(n - take) + (x - pad)];
-        let frac = ((v - lo) / span).clamp(0.0, 1.0);
-        let ht = (frac * levels as f64).round() as usize; // filled levels from the bottom
-        let cell_col = x / 2;
-        let sub = x % 2;
-        for l in 0..ht {
-            let pos_from_top = levels - 1 - l;
-            grid[pos_from_top / 4][cell_col] |= DOT[sub][pos_from_top % 4];
+    if n > 0 {
+        for x in 0..sub_cols {
+            // Most-recent window when full; otherwise stretch the samples we have across
+            // the whole width (so it's never half-empty on the left).
+            let idx = if n >= sub_cols {
+                (n - sub_cols) + x
+            } else if sub_cols > 1 {
+                x * (n - 1) / (sub_cols - 1)
+            } else {
+                n - 1
+            };
+            let v = vals[idx.min(n - 1)];
+            let frac = ((v - lo) / span).clamp(0.0, 1.0);
+            let ht = (frac * levels as f64).round() as usize; // filled levels from the bottom
+            let cell_col = x / 2;
+            let sub = x % 2;
+            for l in 0..ht {
+                let pos_from_top = levels - 1 - l;
+                grid[pos_from_top / 4][cell_col] |= DOT[sub][pos_from_top % 4];
+            }
         }
     }
 
@@ -223,6 +233,17 @@ mod tests {
         for r in &rows {
             assert_eq!(visible_len(r), 10);
         }
+    }
+
+    #[test]
+    fn braille_area_stretches_few_samples_across_width() {
+        let st = Style::plain();
+        // Five samples at the max should fill the whole width, not just the right edge.
+        let rows = braille_area(&[1.0; 5], 0.0, 1.0, 20, 2, "", &st);
+        let bottom = &rows[rows.len() - 1];
+        let first = bottom.chars().next().unwrap();
+        assert_ne!(first, '\u{2800}', "left edge should be filled, not blank");
+        assert_eq!(visible_len(bottom), 20);
     }
 
     #[test]
