@@ -110,30 +110,20 @@ pub(super) fn render_styled(
     blank(&mut f);
 
     // ---- body ----
+    let rows = rows as usize;
     match ui.tab {
-        0 => views::body_overview(
-            s,
-            h,
-            id,
-            &st,
-            w,
-            ncols,
-            rows as usize,
-            &line,
-            &blank,
-            &mut f,
-        ),
-        1 => views::body_cpu(s, h, &st, w, ncols, &line, &blank, &mut f),
-        2 => views::body_cooling(s, h, &st, w, ncols, &line, &blank, &mut f),
-        3 => views::body_memory(s, &st, w, ncols, &line, &blank, &mut f),
-        4 => views::body_energy(s, h, &st, w, ncols, &line, &blank, &mut f),
-        5 => views::body_battery(s, &st, w, ncols, &line, &blank, &mut f),
-        _ => views::body_storage(s, id, &st, w, ncols, &line, &blank, &mut f),
+        0 => views::body_overview(s, h, id, &st, w, ncols, rows, &line, &blank, &mut f),
+        1 => views::body_cpu(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
+        2 => views::body_cooling(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
+        3 => views::body_memory(s, &st, w, ncols, rows, &line, &blank, &mut f),
+        4 => views::body_energy(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
+        5 => views::body_battery(s, &st, w, ncols, rows, &line, &blank, &mut f),
+        _ => views::body_storage(s, id, &st, w, ncols, rows, &line, &blank, &mut f),
     }
 
     // ---- footer pinned to the bottom (pad with the real row count) ----
     let footer_lines = 1 + if ui.help { 2 } else { 1 };
-    let target = (rows as usize).saturating_sub(footer_lines);
+    let target = rows.saturating_sub(footer_lines);
     while f.matches('\n').count() < target {
         blank(&mut f);
     }

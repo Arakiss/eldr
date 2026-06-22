@@ -406,6 +406,21 @@ fn overview_lanes(
     line(format!(" {d}DISK{z}      {}", storage_summary(s, st)), f);
 }
 
+/// Vertical room for a tab's tall chart, after the chrome (header 4 + footer 2) and the
+/// `reserved` lines the rest of the tab occupies. Clamped so it never collapses or runs
+/// away on a very tall screen.
+fn tall_h(rows: usize, reserved: usize) -> usize {
+    rows.saturating_sub(6 + reserved).clamp(3, 28)
+}
+
+/// Split a flat list of cells into `ncols` column-blocks (top-to-bottom within each), for
+/// `chart::columns` — spreads per-core bars, power rails and panels across the width.
+fn into_columns(cells: &[String], ncols: usize) -> Vec<Vec<String>> {
+    let ncols = ncols.max(1);
+    let per = cells.len().div_ceil(ncols).max(1);
+    cells.chunks(per).map(<[String]>::to_vec).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn body_cpu(
     s: &Snapshot,
@@ -413,12 +428,16 @@ pub(super) fn body_cpu(
     st: &Style,
     w: usize,
     ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
 ) {
     let d = st.dim;
     let z = st.reset;
+    let p = s.p_cores as usize;
+    let e = s.per_core.len().saturating_sub(p);
+
     // Total load as a HUD lane.
     let midw = lane_midw(w);
     let load_mid = chart::braille_area(&h.cpu, 0.0, 100.0, midw, 1, st.fire, st);
@@ -438,10 +457,17 @@ pub(super) fn body_cpu(
     );
     blank(f);
 
-    // Tall history area across the full width.
+    // Tall load history, filling the height left over the per-core grid.
+    let core_rows = p.div_ceil(ncols.max(1)).max(1)
+        + if e > 0 {
+            e.div_ceil(ncols.max(1)).max(1) + 1
+        } else {
+            0
+        };
+    let chart_h = tall_h(rows, 1 + 1 + core_rows + 1);
     let chartw = w.saturating_sub(2).max(8);
     let (mn, mx) = min_max(&h.cpu);
-    for row in chart::braille_area(&h.cpu, 0.0, 100.0, chartw, 4, st.fire, st) {
+    for row in chart::braille_area(&h.cpu, 0.0, 100.0, chartw, chart_h, st.fire, st) {
         line(format!(" {row}"), f);
     }
     line(
@@ -456,56 +482,54 @@ pub(super) fn body_cpu(
     );
     blank(f);
 
-    // Per-core bars — Performance cluster | Efficiency cluster, side by side when wide.
-    let p = s.p_cores as usize;
-    let colw = if ncols >= 2 {
-        w.saturating_sub(5) / 2
-    } else {
-        w.saturating_sub(2)
+    // Per-core bars spread across the full width.
+    let colw = w
+        .saturating_sub(2)
+        .saturating_sub(ncols.saturating_sub(1) * 2)
+        / ncols.max(1);
+    let barw = colw.saturating_sub(9).clamp(6, 50);
+    let core_cell = |idx: usize, pre: char, val: f32| {
+        format!(
+            "{pre}{idx:<2} {} {:>3.0}%",
+            chart::fire_bar(val as f64, 0.0, 1.0, barw, st),
+            val * 100.0,
+        )
     };
-    let barw = colw.saturating_sub(11).clamp(8, 60);
-    let block = |title: &str, freq: String, act: f32, cores: &[f32], pre: char| -> Vec<String> {
-        let mut v = Vec::with_capacity(cores.len() + 1);
-        v.push(format!(
-            "{d}{title}  {freq} · {:.0}% of max{z}",
-            act * 100.0
-        ));
-        for (i, val) in cores.iter().enumerate() {
-            v.push(format!(
-                "{pre}{:<2} {} {:>3.0}%",
-                i + 1,
-                chart::fire_bar(*val as f64, 0.0, 1.0, barw, st),
-                val * 100.0,
-            ));
-        }
-        v
-    };
-    let pcores: Vec<f32> = s.per_core.iter().take(p).copied().collect();
-    let ecores: Vec<f32> = s.per_core.iter().skip(p).copied().collect();
-    let pblock = block(
-        "Performance cores",
-        ghz(s.pcpu_freq_mhz),
-        s.pcpu_active,
-        &pcores,
-        'P',
+    line(
+        format!(
+            " {d}Performance cores  {} · {:.0}% of max{z}",
+            ghz(s.pcpu_freq_mhz),
+            s.pcpu_active * 100.0,
+        ),
+        f,
     );
-    let eblock = block(
-        "Efficiency cores",
-        ghz(s.ecpu_freq_mhz),
-        s.ecpu_active,
-        &ecores,
-        'E',
-    );
-    if ncols >= 2 {
-        for l in chart::columns(&[pblock, eblock], 4, st) {
-            line(format!(" {l}"), f);
-        }
-    } else {
-        for l in &pblock {
-            line(format!(" {l}"), f);
-        }
-        blank(f);
-        for l in &eblock {
+    let pcells: Vec<String> = s
+        .per_core
+        .iter()
+        .take(p)
+        .enumerate()
+        .map(|(i, &v)| core_cell(i + 1, 'P', v))
+        .collect();
+    for l in chart::columns(&into_columns(&pcells, ncols), 2, st) {
+        line(format!(" {l}"), f);
+    }
+    if e > 0 {
+        line(
+            format!(
+                " {d}Efficiency cores  {} · {:.0}% of max{z}",
+                ghz(s.ecpu_freq_mhz),
+                s.ecpu_active * 100.0,
+            ),
+            f,
+        );
+        let ecells: Vec<String> = s
+            .per_core
+            .iter()
+            .skip(p)
+            .enumerate()
+            .map(|(i, &v)| core_cell(i + 1, 'E', v))
+            .collect();
+        for l in chart::columns(&into_columns(&ecells, ncols), 2, st) {
             line(format!(" {l}"), f);
         }
     }
@@ -518,6 +542,7 @@ pub(super) fn body_cooling(
     st: &Style,
     w: usize,
     ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
@@ -535,14 +560,34 @@ pub(super) fn body_cooling(
     );
     blank(f);
 
-    let colw = if ncols >= 2 {
-        w.saturating_sub(5) / 2
+    // Fan history — tall area filling the height over the bottom panels.
+    let bottom = if s.fans.len() > 2 {
+        s.fans.len() + 2
     } else {
-        w.saturating_sub(2)
+        5
     };
-    let barw = colw.saturating_sub(16).clamp(8, 50);
+    let chart_h = tall_h(rows, 1 + 1 + 1 + 1 + bottom);
+    let chartw = w.saturating_sub(2).max(8);
+    let lo = (s.fan_min as f64).min(s.fan_max as f64);
+    let hi = s.fan_max.max(1) as f64;
+    line(
+        format!(
+            " {d}Fan history{z}  {d}primary fan, last {} samples{z}",
+            h.rpm.len()
+        ),
+        f,
+    );
+    for row in chart::braille_area(&h.rpm, lo, hi, chartw, chart_h, st.fire, st) {
+        line(format!(" {row}"), f);
+    }
+    blank(f);
 
-    // Temps — health gradient over the operating range; the thermal word carries truth.
+    // Bottom band: temperatures · fans · watchdog, spread across the width.
+    let colw = (w
+        .saturating_sub(2)
+        .saturating_sub((ncols.max(1).max(3) - 1) * 4))
+        / ncols.max(3);
+    let barw = colw.saturating_sub(14).clamp(8, 40);
     let mut temps = vec![format!("{d}Temps{z}")];
     temps.push(format!(
         "CPU temp  {} {:>3.0}°",
@@ -555,12 +600,9 @@ pub(super) fn body_cooling(
         s.gpu_temp,
     ));
 
-    // Fans — fire activity over each fan's envelope.
     let mut fans = vec![format!("{d}Fans{z}")];
     if s.fans.is_empty() {
-        fans.push(format!(
-            "{d}none reported — passively cooled or SMC unavailable{z}"
-        ));
+        fans.push(format!("{d}none — passively cooled or no SMC{z}"));
     } else {
         for (i, fan) in s.fans.iter().enumerate() {
             let failed = fan.max > 0 && fan.target >= 500 && fan.rpm < 500;
@@ -573,49 +615,28 @@ pub(super) fn body_cooling(
             ));
         }
         if let Some(f0) = s.fans.first() {
-            fans.push(format!(
-                "{d}envelope {}–{} rpm · 0% = idle floor{z}",
-                f0.min, f0.max,
-            ));
+            fans.push(format!("{d}envelope {}–{} rpm{z}", f0.min, f0.max));
         }
     }
 
+    let watch = vec![
+        format!("{d}Watchdog{z}"),
+        format!("{d}arms on sustained thermal-{z}"),
+        format!("{d}critical or a stalled fan{z}"),
+        format!("{d}reversible actions only{z}"),
+    ];
+
     if ncols >= 2 {
-        for l in chart::columns(&[temps, fans], 4, st) {
+        for l in chart::columns(&[temps, fans, watch], 4, st) {
             line(format!(" {l}"), f);
         }
     } else {
-        for l in &temps {
-            line(format!(" {l}"), f);
-        }
-        blank(f);
-        for l in &fans {
-            line(format!(" {l}"), f);
+        for blk in [&temps, &fans, &watch] {
+            for l in blk {
+                line(format!(" {l}"), f);
+            }
         }
     }
-    blank(f);
-
-    // Fan history — tall area across the full width.
-    let chartw = w.saturating_sub(2).max(8);
-    let lo = (s.fan_min as f64).min(s.fan_max as f64);
-    let hi = s.fan_max.max(1) as f64;
-    line(
-        format!(
-            " {d}Fan history{z}  {d}primary fan, last {} samples{z}",
-            h.rpm.len()
-        ),
-        f,
-    );
-    for row in chart::braille_area(&h.rpm, lo, hi, chartw, 3, st.fire, st) {
-        line(format!(" {row}"), f);
-    }
-    blank(f);
-    line(
-        format!(
-            " {d}Watchdog{z}  {d}arms on sustained thermal-critical or a stalled fan — reversible actions only{z}"
-        ),
-        f,
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -624,6 +645,7 @@ pub(super) fn body_memory(
     st: &Style,
     w: usize,
     ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
@@ -653,31 +675,35 @@ pub(super) fn body_memory(
     );
     blank(f);
 
-    let colw = if ncols >= 2 {
-        w.saturating_sub(5) / 2
-    } else {
-        w.saturating_sub(2)
-    };
+    // Memory has no time series, so use the space for a big used/cached/free "tank": a
+    // full-width segmented bar, several rows thick, that fills the vertical room.
+    let segw = w.saturating_sub(14).clamp(16, 360);
+    let comp = seg_bar(s.ram_used, s.ram_cached, s.ram_total, segw, st);
+    let bar_h = tall_h(rows, 11);
+    for i in 0..bar_h {
+        if i == bar_h / 2 {
+            line(format!(" {comp}  {d}of {:.0} GB{z}", gib(s.ram_total)), f);
+        } else {
+            line(format!(" {comp}"), f);
+        }
+    }
+    line(
+        format!(
+            " {d}▓ in use {:.1}   ▒ cached {:.1}   ░ free {:.1}  (GB){z}",
+            gib(s.ram_used),
+            gib(s.ram_cached),
+            gib(free),
+        ),
+        f,
+    );
+    blank(f);
 
-    // Left column: composition (segmented bar + breakdown).
-    let segw = colw.saturating_sub(10).clamp(16, 90);
-    let bw = colw.saturating_sub(24).clamp(10, 40);
-    let mut left = vec![format!("{d}Composition{z}")];
-    left.push(format!(
-        "{}  {d}of {:.0} GB{z}",
-        seg_bar(s.ram_used, s.ram_cached, s.ram_total, segw, st),
-        gib(s.ram_total),
-    ));
-    left.push(format!(
-        "{d}▓ in use {:.1}   ▒ cached {:.1}   ░ free {:.1}  (GB){z}",
-        gib(s.ram_used),
-        gib(s.ram_cached),
-        gib(free),
-    ));
-    left.push(String::new());
-    left.push(format!("{d}What the memory holds{z}"));
-    // macOS packs more into the compressor than the bytes it occupies; the ratio shows
-    // why the machine fits more than its RAM size suggests.
+    // Three panels across the width: breakdown · pressure/why/swap · biggest holders.
+    let colw = (w
+        .saturating_sub(2)
+        .saturating_sub((ncols.max(1).max(3) - 1) * 4))
+        / ncols.max(3);
+    let bw = colw.saturating_sub(24).clamp(8, 40);
     let packed = if s.ram_compressed > 0 && s.ram_compressed_holds > s.ram_compressed {
         format!(
             "{d}holds {:.1} GB ({:.1}× packed){z}",
@@ -687,71 +713,68 @@ pub(super) fn body_memory(
     } else {
         String::new()
     };
+    let mut breakdown = vec![format!("{d}What the memory holds{z}")];
     for (label, val) in [
         ("App memory", app),
         ("Wired", s.ram_wired),
         ("Compressed", s.ram_compressed),
         ("Cached files", s.ram_cached),
     ] {
-        left.push(format!(
+        breakdown.push(format!(
             "{label:<13} {:>6.1} GB {}",
             gib(val),
             chart::fire_bar(val as f64, 0.0, s.ram_total.max(1) as f64, bw, st),
         ));
         if label == "Compressed" && !packed.is_empty() {
-            left.push(format!("  {packed}"));
+            breakdown.push(format!("  {packed}"));
         }
     }
-    left.push(format!(
-        "{d}cached files are reusable — they count as free{z}"
-    ));
+    breakdown.push(format!("{d}cached files are reusable — count as free{z}"));
 
-    // Right column: pressure + why + swap + biggest holders.
-    let mut right = vec![format!(
-        "{d}Pressure{z}  {pc}● {press}{z}  {d}{}{z}",
-        pressure_words(press)
-    )];
-    right.push(format!("{d}why → {}{z}", why_pressure(s)));
-    if let Some(p) = s.top_mem.first() {
-        right.push(format!(
-            "{d}      biggest holder: {} at {:.1} GB{z}",
-            clean_proc(&p.name),
-            gib(p.mem),
-        ));
-    }
-    right.push(String::new());
     let swap_note = if s.swap_used == 0 {
         "macOS hasn't needed to swap — good"
     } else {
         "parked on disk from earlier (clears on reboot)"
     };
-    right.push(format!(
+    let mut state = vec![format!(
+        "{d}Pressure{z}  {pc}● {press}{z}  {d}{}{z}",
+        pressure_words(press)
+    )];
+    state.push(format!("{d}why → {}{z}", why_pressure(s)));
+    if let Some(p) = s.top_mem.first() {
+        state.push(format!(
+            "{d}biggest holder: {} at {:.1} GB{z}",
+            clean_proc(&p.name),
+            gib(p.mem),
+        ));
+    }
+    state.push(String::new());
+    state.push(format!(
         "{d}Swap{z}  {:.1} {d}of{z} {:.1} GB",
         gib(s.swap_used),
         gib(s.swap_total),
     ));
-    right.push(format!("{d}{swap_note}{z}"));
-    right.push(String::new());
-    right.push(format!("{d}Using most memory{z}"));
-    for p in s.top_mem.iter().take(6) {
-        right.push(format!(
-            "  {} {d}{}{z}",
+    state.push(format!("{d}{swap_note}{z}"));
+
+    let mut holders = vec![format!("{d}Using most memory{z}")];
+    for p in s.top_mem.iter().take(rows.saturating_sub(10).clamp(4, 12)) {
+        holders.push(format!(
+            "{} {d}{}{z}",
             clean_proc(&p.name),
             human_mem(p.mem),
         ));
     }
 
     if ncols >= 2 {
-        for l in chart::columns(&[left, right], 4, st) {
+        for l in chart::columns(&[breakdown, state, holders], 4, st) {
             line(format!(" {l}"), f);
         }
     } else {
-        for l in &left {
-            line(format!(" {l}"), f);
-        }
-        blank(f);
-        for l in &right {
-            line(format!(" {l}"), f);
+        for blk in [&breakdown, &state, &holders] {
+            for l in blk {
+                line(format!(" {l}"), f);
+            }
+            blank(f);
         }
     }
 }
@@ -763,6 +786,7 @@ pub(super) fn body_energy(
     st: &Style,
     w: usize,
     ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
@@ -779,9 +803,11 @@ pub(super) fn body_energy(
         f,
     );
     blank(f);
-    // Tall power history across the full width.
+    // Tall power history filling the height over the rails.
+    let rail_rows = 4usize.div_ceil(ncols.max(1));
+    let chart_h = tall_h(rows, 1 + 1 + 1 + 1 + rail_rows);
     let chartw = w.saturating_sub(2).max(8);
-    for row in chart::braille_area(&h.pwr, 0.0, mx.max(1.0), chartw, 4, st.fire, st) {
+    for row in chart::braille_area(&h.pwr, 0.0, mx.max(1.0), chartw, chart_h, st.fire, st) {
         line(format!(" {row}"), f);
     }
     line(
@@ -798,12 +824,11 @@ pub(super) fn body_energy(
         format!(" {d}Where the watts go{z}  {d}(chip package){z}"),
         f,
     );
-    let colw = if ncols >= 2 {
-        w.saturating_sub(5) / 2
-    } else {
-        w.saturating_sub(2)
-    };
-    let barw = colw.saturating_sub(16).clamp(10, 60);
+    let colw = w
+        .saturating_sub(2)
+        .saturating_sub(ncols.saturating_sub(1) * 4)
+        / ncols.max(1);
+    let barw = colw.saturating_sub(14).clamp(10, 60);
     let cap = s.all_power.max(0.1) as f64;
     let rails = [
         ("CPU", s.cpu_power),
@@ -811,26 +836,22 @@ pub(super) fn body_energy(
         ("RAM", s.ram_power),
         ("ANE", s.ane_power),
     ];
-    let mk = |items: &[(&str, f32)]| -> Vec<String> {
-        items
-            .iter()
-            .map(|(label, val)| {
-                format!(
-                    "{label:<4} {:>5.1} W {}",
-                    val,
-                    chart::fire_bar(*val as f64, 0.0, cap, barw, st),
-                )
-            })
-            .collect()
-    };
+    let cells: Vec<String> = rails
+        .iter()
+        .map(|(label, val)| {
+            format!(
+                "{label:<4} {:>5.1} W {}",
+                val,
+                chart::fire_bar(*val as f64, 0.0, cap, barw, st),
+            )
+        })
+        .collect();
     if ncols >= 2 {
-        let left = mk(&rails[0..2]);
-        let right = mk(&rails[2..4]);
-        for l in chart::columns(&[left, right], 4, st) {
+        for l in chart::columns(&into_columns(&cells, ncols), 4, st) {
             line(format!(" {l}"), f);
         }
     } else {
-        for l in mk(&rails) {
+        for l in cells {
             line(format!(" {l}"), f);
         }
     }
@@ -842,6 +863,7 @@ pub(super) fn body_battery(
     st: &Style,
     w: usize,
     ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
@@ -849,9 +871,19 @@ pub(super) fn body_battery(
     let d = st.dim;
     let z = st.reset;
     let Some(bat) = &s.battery else {
+        // Desktop (Mac mini / Studio): no battery. Don't leave a near-empty panel — say
+        // it plainly and point at where the power readings live.
+        for _ in 0..rows.saturating_sub(8) / 2 {
+            blank(f);
+        }
         line(format!(" {d}No internal battery{z}"), f);
+        blank(f);
         line(
             format!(" {d}This Mac runs on wall power (desktop — Mac mini / Studio).{z}"),
+            f,
+        );
+        line(
+            format!(" {d}Power draw and history live in the {z}Energy{d} tab.{z}"),
             f,
         );
         return;
@@ -945,10 +977,12 @@ pub(super) fn body_storage(
     st: &Style,
     w: usize,
     ncols: usize,
+    rows: usize,
     line: &LineFn,
     blank: &BlankFn,
     f: &mut String,
 ) {
+    let _ = rows;
     let d = st.dim;
     let z = st.reset;
     let colw = if ncols >= 2 {
@@ -1020,6 +1054,45 @@ pub(super) fn body_storage(
             for l in blk {
                 line(format!(" {l}"), f);
             }
+        }
+    }
+
+    // Per-physical-disk health: bus, kind, I/O errors, and NVMe wear/temp where exposed.
+    let disks: Vec<&crate::sensors::snapshot::DiskHealth> = s
+        .disk_health
+        .iter()
+        .filter(|h| !h.model.is_empty() || !h.bsd_name.is_empty())
+        .collect();
+    if !disks.is_empty() {
+        blank(f);
+        line(format!(" {d}Disks{z}"), f);
+        for hd in disks {
+            let model = if hd.model.is_empty() {
+                hd.bsd_name.clone()
+            } else {
+                hd.model.clone()
+            };
+            let kind = if hd.solid_state { "SSD" } else { "HDD" };
+            let where_ = if hd.external { "external" } else { "internal" };
+            let nvme = hd.nvme.as_ref();
+            let wear = nvme
+                .map(|n| format!(" {d}·{z} wear {}%", n.percentage_used))
+                .unwrap_or_default();
+            let temp = nvme
+                .filter(|n| n.temp_c > 0.0)
+                .map(|n| format!(" {d}·{z} {:.0}°", n.temp_c))
+                .unwrap_or_default();
+            let errc = if hd.errors() > 0 { st.red } else { d };
+            line(
+                format!(
+                    "   {b}{model}{z}  {d}{where_} · {} · {kind}{z}  {errc}err {}{z}{d} · retry {}{z}{wear}{temp}",
+                    hd.interconnect,
+                    hd.errors(),
+                    hd.retries(),
+                    b = st.bold,
+                ),
+                f,
+            );
         }
     }
 
