@@ -13,6 +13,14 @@ use crate::sensors::{host, soc};
 /// can tell what it's parsing.
 pub const SCHEMA_VERSION: &str = "1";
 
+/// A single process holding at least this much CPU (summed across cores, like `ps` — so
+/// 300% ≈ three full cores held continuously) is a "hog" worth surfacing: the guard
+/// notifies on it, the TUI flags it. Shared so both agree on what counts.
+pub const HOG_CPU_PCT: f32 = 300.0;
+/// A single process whose memory footprint is at least this fraction of physical RAM is
+/// a memory hog worth surfacing.
+pub const HOG_RAM_FRAC: f64 = 0.15;
+
 /// Overall health verdict. Mirrors the bash prototype's OK/WARN/ALERT.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Level {

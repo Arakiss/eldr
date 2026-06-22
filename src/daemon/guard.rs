@@ -9,7 +9,9 @@ use crate::config;
 use crate::daemon::cmux;
 use crate::daemon::maint;
 use crate::daemon::watchdog::Watchdog;
-use crate::sensors::snapshot::{DiskHealth, Level, Snapshot, Thermal};
+use crate::sensors::snapshot::{
+    DiskHealth, HOG_CPU_PCT, HOG_RAM_FRAC, Level, ProcInfo, Snapshot, Thermal,
+};
 use core::ffi::c_int;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +67,7 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut history: Vec<(f64, u32, f32)> = Vec::new();
     let mut disk_prev: HashMap<String, (u64, u64)> = HashMap::new();
     let mut disk_alerted: HashSet<String> = HashSet::new();
+    let mut hogs = HogWatch::default();
     let mut last_maint: u64 = 0; // 0 ⇒ run housekeeping once at startup
     let mut warned_big = false;
     while !STOP.load(Ordering::SeqCst) {
@@ -76,6 +79,7 @@ pub fn run(interval_secs: u64) -> i32 {
 
         handle_transitions(&snap, &mut last);
         watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted);
+        watch_resource_hogs(&snap, &mut hogs);
         run_maintenance(&mut last_maint, &mut warned_big);
 
         // Sustained-critical gating for armed interventions.
@@ -295,6 +299,177 @@ fn watch_disk_health(
     }
 }
 
+/// How many consecutive samples a hog must persist before alerting. At the default 30s
+/// cadence that's ~1 minute sustained — enough to skip a brief spike (a compile, a page
+/// load) and catch a genuine runaway like a stuck VM or a leaking process.
+const HOG_SUSTAIN: u32 = 2;
+/// Ignore swap below this — a little parked swap is normal and not worth a notification.
+const SWAP_FLOOR: u64 = 1 << 30; // 1 GiB
+
+/// A resource-hog notification ready to fire: a macOS notification (`title`/`body`) plus
+/// a one-line record for the alerts log.
+struct HogAlert {
+    title: String,
+    body: String,
+    log: String,
+}
+
+/// Sustained-hog detector with per-process hysteresis, mirroring the disk watcher: it
+/// fires once when a process (or memory itself) crosses a threshold for `HOG_SUSTAIN`
+/// samples, and clears the latch when it recovers so a later resurgence re-alerts. Like
+/// everything in the guard, it only NOTIFIES — never kills, suspends, or shuts down.
+#[derive(Default)]
+struct HogWatch {
+    cpu_streak: HashMap<i32, u32>,
+    cpu_alerted: HashSet<i32>,
+    ram_streak: HashMap<i32, u32>,
+    ram_alerted: HashSet<i32>,
+    mem_streak: u32,
+    mem_alerted: bool,
+    swap_prev: Option<u64>,
+}
+
+impl HogWatch {
+    /// Advance one sample and return the alerts to fire this tick (usually none).
+    fn check(&mut self, s: &Snapshot) -> Vec<HogAlert> {
+        let mut out = Vec::new();
+
+        // CPU hogs — any top process sustaining ≥ HOG_CPU_PCT across cores.
+        let cpu_now: HashSet<i32> = s
+            .top_procs
+            .iter()
+            .filter(|p| p.cpu >= HOG_CPU_PCT)
+            .map(|p| p.pid)
+            .collect();
+        self.cpu_streak.retain(|pid, _| cpu_now.contains(pid));
+        self.cpu_alerted.retain(|pid| cpu_now.contains(pid));
+        for p in s.top_procs.iter().filter(|p| p.cpu >= HOG_CPU_PCT) {
+            let n = self.cpu_streak.entry(p.pid).or_insert(0);
+            *n += 1;
+            if *n >= HOG_SUSTAIN && self.cpu_alerted.insert(p.pid) {
+                out.push(HogAlert::cpu(s, p));
+            }
+        }
+
+        // RAM hogs — any top process holding ≥ HOG_RAM_FRAC of physical memory.
+        let total = s.ram_total.max(1);
+        let is_ram_hog = |p: &ProcInfo| (p.mem as f64 / total as f64) >= HOG_RAM_FRAC;
+        let ram_now: HashSet<i32> = s
+            .top_mem
+            .iter()
+            .filter(|p| is_ram_hog(p))
+            .map(|p| p.pid)
+            .collect();
+        self.ram_streak.retain(|pid, _| ram_now.contains(pid));
+        self.ram_alerted.retain(|pid| ram_now.contains(pid));
+        for p in s.top_mem.iter().filter(|p| is_ram_hog(p)) {
+            let n = self.ram_streak.entry(p.pid).or_insert(0);
+            *n += 1;
+            if *n >= HOG_SUSTAIN && self.ram_alerted.insert(p.pid) {
+                out.push(HogAlert::ram(s, p));
+            }
+        }
+
+        // Memory strain — pressure at "high", or swap actively growing while pressure is
+        // already "medium". The plain-language pressure signal, not a raw "% used".
+        let press = s.mem_pressure();
+        let swap_grew =
+            self.swap_prev.map(|pv| s.swap_used > pv).unwrap_or(false) && s.swap_used >= SWAP_FLOOR;
+        self.swap_prev = Some(s.swap_used);
+        let strain = press == "high" || (swap_grew && press == "medium");
+        if strain {
+            self.mem_streak += 1;
+            if self.mem_streak >= HOG_SUSTAIN && !self.mem_alerted {
+                self.mem_alerted = true;
+                out.push(HogAlert::memory(s, swap_grew));
+            }
+        } else {
+            self.mem_streak = 0;
+            if press == "low" {
+                self.mem_alerted = false; // recovered — re-arm
+            }
+        }
+
+        out
+    }
+}
+
+impl HogAlert {
+    fn cpu(s: &Snapshot, p: &ProcInfo) -> Self {
+        let name = proc_label(&p.name);
+        HogAlert {
+            title: format!("eldr · {name} using {:.0}% CPU", p.cpu),
+            body: format!(
+                "{name} (pid {}) has held {:.0}% CPU — it's likely slowing the Mac.",
+                p.pid, p.cpu,
+            ),
+            log: format!(
+                "{} HOG CPU pid={} cpu={:.0} name={}\n",
+                s.ts, p.pid, p.cpu, p.name,
+            ),
+        }
+    }
+    fn ram(s: &Snapshot, p: &ProcInfo) -> Self {
+        let name = proc_label(&p.name);
+        let gb = p.mem as f64 / 1_073_741_824.0;
+        let pct = p.mem as f64 / s.ram_total.max(1) as f64 * 100.0;
+        HogAlert {
+            title: format!("eldr · {name} using {gb:.1} GB RAM"),
+            body: format!(
+                "{name} (pid {}) holds {gb:.1} GB ({pct:.0}% of memory).",
+                p.pid
+            ),
+            log: format!(
+                "{} HOG RAM pid={} mem={} name={}\n",
+                s.ts, p.pid, p.mem, p.name,
+            ),
+        }
+    }
+    fn memory(s: &Snapshot, swap_grew: bool) -> Self {
+        let avail = s.ram_available as f64 / 1_073_741_824.0;
+        let swap = s.swap_used as f64 / 1_073_741_824.0;
+        let tail = if swap_grew {
+            format!(" — swap climbing, now {swap:.1} GB")
+        } else {
+            String::new()
+        };
+        HogAlert {
+            title: "eldr · memory under pressure".into(),
+            body: format!("Only {avail:.1} GB reclaimable; apps may slow{tail}."),
+            log: format!(
+                "{} HOG MEM pressure={} avail={} swap_used={} swap_grew={}\n",
+                s.ts,
+                s.mem_pressure(),
+                s.ram_available,
+                s.swap_used,
+                swap_grew,
+            ),
+        }
+    }
+}
+
+/// Short, human label for a process path (basename, `com.apple.` prefix dropped).
+fn proc_label(name: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    base.strip_prefix("com.apple.")
+        .and_then(|r| r.split('.').next())
+        .unwrap_or(base)
+        .to_string()
+}
+
+/// Watch for a process (or memory itself) hogging the machine and notify, passively, once
+/// per episode. Pairs with the disk and thermal watchers — the same notify-only posture.
+fn watch_resource_hogs(s: &Snapshot, hogs: &mut HogWatch) {
+    for a in hogs.check(s) {
+        log_alert_line(&a.log);
+        notify_os(&a.title, &a.body);
+    }
+}
+
+fn log_alert_line(line: &str) {
+    append(&config::alerts_path(), line);
+}
+
 /// Daily housekeeping: cap the append-only logs so they can't grow without bound, and —
 /// once per guard run — warn if the data dir has grown past the configured threshold
 /// (usually a manifest over a huge, many-file volume). Runs at startup, then every 24h.
@@ -394,6 +569,94 @@ mod tests {
         assert!(counters_grew(Some((5, 2)), (5, 3)));
         // Counters can't fall on real hardware, but a reset must not false-alarm.
         assert!(!counters_grew(Some((9, 9)), (0, 0)));
+    }
+
+    fn cpu_proc(pid: i32, cpu: f32) -> ProcInfo {
+        ProcInfo {
+            pid,
+            cpu,
+            mem: 0,
+            name: format!("hog{pid}"),
+        }
+    }
+    fn mem_proc(pid: i32, mem: u64) -> ProcInfo {
+        ProcInfo {
+            pid,
+            cpu: 0.0,
+            mem,
+            name: format!("hog{pid}"),
+        }
+    }
+
+    #[test]
+    fn cpu_hog_fires_after_sustain_then_latches() {
+        let mut w = HogWatch::default();
+        let mut s = Snapshot::default();
+        s.ram_total = 48 << 30;
+        s.ram_available = 40 << 30; // low pressure, so only the CPU signal is in play
+        s.top_procs = vec![cpu_proc(7, 500.0)];
+        // First sample over threshold: not yet (needs HOG_SUSTAIN).
+        assert!(w.check(&s).is_empty());
+        // Second sample: fires once.
+        let a = w.check(&s);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].title.contains("CPU"));
+        // Still hogging: latched, no repeat.
+        assert!(w.check(&s).is_empty());
+        // Drops below threshold: latch clears.
+        s.top_procs = vec![cpu_proc(7, 10.0)];
+        assert!(w.check(&s).is_empty());
+        // Returns: re-alerts after the sustain window again.
+        s.top_procs = vec![cpu_proc(7, 500.0)];
+        assert!(w.check(&s).is_empty());
+        assert_eq!(w.check(&s).len(), 1);
+    }
+
+    #[test]
+    fn ram_hog_needs_the_fraction() {
+        let mut w = HogWatch::default();
+        let mut s = Snapshot::default();
+        s.ram_total = 48 << 30;
+        s.ram_available = 40 << 30; // low pressure, so only the RAM signal is in play
+        // 4 GB on 48 GB is under 15% — never fires.
+        s.top_mem = vec![mem_proc(3, 4 << 30)];
+        assert!(w.check(&s).is_empty());
+        assert!(w.check(&s).is_empty());
+        // 12 GB (25%) sustained — fires once.
+        s.top_mem = vec![mem_proc(3, 12 << 30)];
+        assert!(w.check(&s).is_empty());
+        let a = w.check(&s);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].title.contains("RAM"));
+    }
+
+    #[test]
+    fn memory_strain_fires_on_sustained_high_pressure() {
+        let mut w = HogWatch::default();
+        let mut s = Snapshot::default();
+        s.ram_total = 48 << 30;
+        // available < 10% ⇒ pressure "high".
+        s.ram_available = 2 << 30;
+        assert!(w.check(&s).is_empty());
+        let a = w.check(&s);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].title.contains("memory"));
+        // Recover to low pressure ⇒ latch clears, re-arms.
+        s.ram_available = 40 << 30;
+        assert!(w.check(&s).is_empty());
+    }
+
+    #[test]
+    fn quiet_machine_never_alerts() {
+        let mut w = HogWatch::default();
+        let mut s = Snapshot::default();
+        s.ram_total = 48 << 30;
+        s.ram_available = 40 << 30; // low pressure
+        s.top_procs = vec![cpu_proc(1, 50.0)];
+        s.top_mem = vec![mem_proc(1, 2 << 30)];
+        for _ in 0..5 {
+            assert!(w.check(&s).is_empty());
+        }
     }
 
     #[test]

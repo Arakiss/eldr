@@ -15,6 +15,9 @@ pub struct Style {
     /// The eldr brand accent — fire orange. Used for activity bars (CPU, power).
     pub fire: &'static str,
     pub reset: &'static str,
+    /// True only on a 24-bit terminal. The RGB gradients in [`crate::ui::chart`] need
+    /// truecolor; on ansi16 they fall back to a solid per-zone colour.
+    pub truecolor: bool,
 }
 
 impl Style {
@@ -42,6 +45,7 @@ impl Style {
             blue: "\x1b[34m",
             fire: "\x1b[38;5;208m",
             reset: "\x1b[0m",
+            truecolor: false,
         }
     }
     /// 24-bit (truecolor) brand palette: fire on charcoal, with the product's own
@@ -57,6 +61,7 @@ impl Style {
             blue: "\x1b[38;2;127;168;201m",  // #7fa8c9
             fire: "\x1b[38;2;255;106;44m",   // #ff6a2c — brand accent
             reset: "\x1b[0m",
+            truecolor: true,
         }
     }
     pub const fn plain() -> Self {
@@ -69,6 +74,7 @@ impl Style {
             blue: "",
             fire: "",
             reset: "",
+            truecolor: false,
         }
     }
 }
@@ -143,4 +149,75 @@ pub fn human_bytes(b: u64) -> String {
 /// Just the numeric GiB value (for aligned "used / total" pairs).
 pub fn gib(b: u64) -> f64 {
     b as f64 / (1024.0 * 1024.0 * 1024.0)
+}
+
+/// Visible width of a styled string — counts characters, skips ANSI escape sequences
+/// (`ESC [ … letter`), so colour codes don't count toward the column budget. Shared by
+/// the TUI layout (`tui`) and the chart compositor (`chart`).
+pub fn visible_len(s: &str) -> usize {
+    let mut n = 0;
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            for x in it.by_ref() {
+                if x.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Clip a styled line to `w` visible columns, ANSI-aware: lines that fit pass through
+/// untouched; longer ones are cut to `w-1` visible chars plus an ellipsis (and a reset,
+/// in case the cut fell inside a coloured run). Stops content from spilling past the
+/// panel edge.
+pub fn fit(s: &str, w: usize) -> String {
+    if visible_len(s) <= w {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut cols = 0usize;
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            out.push(c);
+            for x in it.by_ref() {
+                out.push(x);
+                if x.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if cols >= w.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        cols += 1;
+    }
+    out.push('…');
+    out.push_str("\x1b[0m");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_is_ansi_aware() {
+        // Colour codes don't count toward visible width.
+        assert_eq!(visible_len("\x1b[2mhello world\x1b[0m"), 11);
+        // A line that fits passes through untouched.
+        assert_eq!(fit("\x1b[2mhi\x1b[0m", 10), "\x1b[2mhi\x1b[0m");
+        // An over-wide line is clipped to exactly w visible columns (w-1 + ellipsis)...
+        let clipped = fit("\x1b[2mabcdefghij\x1b[0m", 5);
+        assert_eq!(visible_len(&clipped), 5);
+        // ...and never spills past the panel: the bare text case too.
+        assert_eq!(visible_len(&fit("abcdefghijklmnop", 8)), 8);
+    }
 }
