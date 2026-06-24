@@ -30,9 +30,11 @@ compile_error!(
 pub mod config;
 pub mod crypto;
 pub mod daemon;
+pub mod doctor;
 pub mod ffi;
 pub mod json;
 pub mod mcp;
 pub mod sensors;
 pub mod ui;
+pub mod update;
 pub mod watch;
