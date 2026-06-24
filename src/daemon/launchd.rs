@@ -18,6 +18,11 @@ fn plist_path() -> std::path::PathBuf {
         .join(format!("{LABEL}.plist"))
 }
 
+/// Whether the guard's LaunchAgent is installed (its plist exists).
+pub fn installed() -> bool {
+    plist_path().exists()
+}
+
 fn render_plist(exe: &str, interval: u32, dir: &str, log: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

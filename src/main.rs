@@ -2,11 +2,10 @@
 //! library. The library does the work; `main` only routes and sets exit codes.
 
 use eldr::daemon::{bench, guard, launchd, maint, scrub, watchdog};
-use eldr::mcp;
 use eldr::sensors::snapshot::Snapshot;
 use eldr::sensors::system::SystemInfo;
 use eldr::ui::{pretty, tui};
-use eldr::watch;
+use eldr::{doctor, mcp, update, watch};
 
 /// Default IOReport sampling window for one-shot readings (`now`/`status`/`check`).
 const DEFAULT_SAMPLE_MS: u64 = 500;
@@ -45,6 +44,8 @@ INTEGRITY
                             (--notify alerts on corruption for scheduled runs)
     scrub status [path]     manifest summary
     prune                   cap the append-only logs; report freed + data-dir size
+    doctor                  self-check: sensors, guard, config, install, version
+    update [--check]        check for a newer release; update via Homebrew or instruct
 
 AGENTS
     mcp                     MCP server over stdio (JSON-RPC) for Claude Code / Codex
@@ -154,8 +155,14 @@ fn dispatch(cmd: &str, rest: &[String]) -> i32 {
         }
         "-V" | "--version" | "version" => {
             println!("eldr {}", env!("CARGO_PKG_VERSION"));
+            // Cached hint only — no network unless `eldr update` is run.
+            if let Some(latest) = update::cached_newer() {
+                println!("a newer version is available: {latest}  (run `eldr update`)");
+            }
             0
         }
+        "doctor" => doctor::run(),
+        "update" => update::run(rest),
         "guard" => {
             let secs = opt(rest, "--interval")
                 .and_then(|v| v.parse::<u64>().ok())

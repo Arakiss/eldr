@@ -45,7 +45,7 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.9.0`). Every reading above is cross-checked against an
+> **Status:** early but real (`v0.10.0`). Every reading above is cross-checked against an
 > independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
@@ -136,6 +136,8 @@ eldr scrub init <path>       fingerprint a tree (SHA-256) into a manifest
 eldr scrub verify <path>     re-hash; report bit rot, edits, new/missing (--notify to alert)
 eldr scrub status [path]     manifest summary
 eldr prune                   cap the append-only logs; report freed + data-dir size
+eldr doctor                  self-check: sensors, guard, config, install, version
+eldr update [--check]        check for a newer release; update via Homebrew (or instruct)
 
 eldr suspend <pid>           SIGSTOP a process (refuses protected ones) — reversible
 eldr resume <pid>            SIGCONT a suspended process
@@ -234,7 +236,15 @@ ELDR_DRYRUN=0        # 1 = log only, perform nothing
 
 ELDR_HOG_CPU=300     # resource-hog alert: % CPU (across cores) a process must sustain
 ELDR_HOG_RAM=0.15    # resource-hog alert: fraction of physical RAM a process must hold
+
+ELDR_UPDATE_CHECK=0  # 1 = let the guard check GitHub for a newer release (~daily) and
+                     # notify; off by default so eldr stays fully offline unless asked
 ```
+
+eldr is offline by default. The only network it ever makes is the new-version check, and
+only when you opt in (`ELDR_UPDATE_CHECK=1`) or run `eldr update` explicitly — a single
+cached `curl` to the GitHub releases API, never a crate. `eldr update` upgrades via
+Homebrew when installed that way, otherwise it prints the steps; it never auto-installs.
 
 The TUI also takes `ELDR_COLS`/`ELDR_ROWS` to pin the panel size when a terminal or
 multiplexer misreports it (it auto-detects via the terminal otherwise).

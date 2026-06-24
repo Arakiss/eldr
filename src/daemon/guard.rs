@@ -67,7 +67,11 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut history: Vec<(f64, u32, f32)> = Vec::new();
     let mut disk_prev: HashMap<String, (u64, u64)> = HashMap::new();
     let mut disk_alerted: HashSet<String> = HashSet::new();
-    let mut hogs = HogWatch::from_config(&config::Config::load());
+    let cfg = config::Config::load();
+    let mut hogs = HogWatch::from_config(&cfg);
+    let update_check = cfg.flag("ELDR_UPDATE_CHECK", false);
+    let mut last_update: u64 = 0;
+    let mut update_notified: Option<String> = None;
     let mut last_maint: u64 = 0; // 0 ⇒ run housekeeping once at startup
     let mut warned_big = false;
     while !STOP.load(Ordering::SeqCst) {
@@ -81,6 +85,9 @@ pub fn run(interval_secs: u64) -> i32 {
         watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted);
         watch_resource_hogs(&snap, &mut hogs);
         run_maintenance(&mut last_maint, &mut warned_big);
+        if update_check {
+            watch_for_update(&mut last_update, &mut update_notified);
+        }
 
         // Sustained-critical gating for armed interventions.
         if is_critical(&snap) {
@@ -497,6 +504,33 @@ fn watch_resource_hogs(s: &Snapshot, hogs: &mut HogWatch) {
 
 fn log_alert_line(line: &str) {
     append(&config::alerts_path(), line);
+}
+
+/// Opt-in (`ELDR_UPDATE_CHECK=1`) passive new-version notice: check at most every 6 hours
+/// (the underlying fetch is itself cached to once a day), and notify once per new version.
+/// Never installs anything — that's the user's `eldr update`.
+fn watch_for_update(last: &mut u64, notified: &mut Option<String>) {
+    let now = crate::sensors::host::unix_time();
+    if now.saturating_sub(*last) < 21_600 {
+        return;
+    }
+    *last = now;
+    if let Some(v) = crate::update::newer_available(false)
+        && notified.as_deref() != Some(v.as_str())
+    {
+        *notified = Some(v.clone());
+        append(
+            &config::alerts_path(),
+            &format!(
+                "{} UPDATE eldr {v} available\n",
+                crate::sensors::host::timestamp()
+            ),
+        );
+        notify_os(
+            "eldr · update available",
+            &format!("v{v} is out — run `eldr update`"),
+        );
+    }
 }
 
 /// Daily housekeeping: cap the append-only logs so they can't grow without bound, and —

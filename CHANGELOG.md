@@ -3,7 +3,19 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
-## [0.9.0] — unreleased
+## [0.10.0] — unreleased
+
+### Added
+- **`eldr doctor`** — a one-shot self-check: version (and whether a newer one is known),
+  machine, which sensor sources answer, guard running/installed + arming, data-dir size,
+  config, and how/where eldr is installed (with a PATH check).
+- **New-version check + `eldr update`.** Opt-in and offline-respecting: the guard checks
+  GitHub (one cached `curl`, ~daily, `ELDR_UPDATE_CHECK=1`) and notifies — never installs.
+  `eldr update [--check]` reports current vs latest and, unless `--check`, upgrades via
+  Homebrew (or prints the steps from source). `eldr version` shows a cached hint. No HTTP
+  crate; the network call shells out to `curl`, and is silent on failure.
+
+## [0.9.0]
 
 ### Fixed
 - **Memory leak in the IOReport sampler.** `IOReportCreateSubscription` returns a
