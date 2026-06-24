@@ -107,7 +107,7 @@ pub fn finish(t0: HostT0, top_n: usize) -> HostMetrics {
 fn collect_volumes() -> Vec<VolumeInfo> {
     mach::volumes()
         .into_iter()
-        .filter(|v| is_user_mount(&v.mount_point, &v.fs, v.local))
+        .filter(|v| is_user_mount(&v.mount_point, &v.fs, v.local, v.read_only))
         .map(|v| {
             let name = mach::volume_name(&v.mount_point)
                 .or_else(|| basename(&v.mount_point))
@@ -125,13 +125,19 @@ fn collect_volumes() -> Vec<VolumeInfo> {
         .collect()
 }
 
-/// True for volumes a person would recognize: the boot volume (`/`) or a local volume
-/// under `/Volumes`. Network mounts and pseudo filesystems are excluded.
-fn is_user_mount(mount_point: &str, fs: &str, local: bool) -> bool {
+/// True for volumes a person would recognize as their own storage: the boot volume (`/`)
+/// or a writable local volume under `/Volumes`. Network mounts and pseudo filesystems are
+/// excluded, and so are read-only mounts under `/Volumes` — those are app/installer disk
+/// images (e.g. a mounted `.dmg`), not storage you manage. The boot volume is always kept
+/// even though it reads read-only (the sealed system volume on Apple Silicon).
+fn is_user_mount(mount_point: &str, fs: &str, local: bool, read_only: bool) -> bool {
     if !local || matches!(fs, "devfs" | "autofs" | "nullfs") {
         return false;
     }
-    mount_point == "/" || mount_point.starts_with("/Volumes/")
+    if mount_point == "/" {
+        return true;
+    }
+    mount_point.starts_with("/Volumes/") && !read_only
 }
 
 /// Last non-empty path component, or `None` for `/` and empty paths.
@@ -190,16 +196,20 @@ mod tests {
 
     #[test]
     fn user_mount_filter() {
-        // Shown: the boot volume and local volumes under /Volumes.
-        assert!(is_user_mount("/", "apfs", true));
-        assert!(is_user_mount("/Volumes/Vault", "apfs", true));
-        assert!(is_user_mount("/Volumes/Backup", "exfat", true));
+        // Shown: the boot volume (kept even though it's a sealed read-only system volume)
+        // and writable local volumes under /Volumes.
+        assert!(is_user_mount("/", "apfs", true, true));
+        assert!(is_user_mount("/Volumes/Vault", "apfs", true, false));
+        assert!(is_user_mount("/Volumes/Backup", "exfat", true, false));
         // Hidden: the system's firmlinked data + helper volumes.
-        assert!(!is_user_mount("/System/Volumes/Data", "apfs", true));
-        assert!(!is_user_mount("/System/Volumes/VM", "apfs", true));
+        assert!(!is_user_mount("/System/Volumes/Data", "apfs", true, false));
+        assert!(!is_user_mount("/System/Volumes/VM", "apfs", true, false));
         // Excluded: network mounts and pseudo filesystems.
-        assert!(!is_user_mount("/Volumes/NetShare", "smbfs", false));
-        assert!(!is_user_mount("/dev", "devfs", true));
+        assert!(!is_user_mount("/Volumes/NetShare", "smbfs", false, false));
+        assert!(!is_user_mount("/dev", "devfs", true, false));
+        // Excluded: a mounted app/installer disk image — read-only under /Volumes
+        // (e.g. the "Otty" terminal's .dmg, which is not storage you manage).
+        assert!(!is_user_mount("/Volumes/Otty", "hfs", true, true));
     }
 
     #[test]
