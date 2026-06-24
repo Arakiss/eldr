@@ -74,10 +74,31 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut update_notified: Option<String> = None;
     let mut last_maint: u64 = 0; // 0 ⇒ run housekeeping once at startup
     let mut warned_big = false;
+    let mut last_smart: u64 = 0; // 0 ⇒ read SMART once at startup, then hourly
+    let mut smart_cache: HashMap<String, String> = HashMap::new();
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
-        snap.read_smart();
+        // The firmware SMART verdict shells out to `diskutil` per disk — far too heavy for
+        // every 30s sample, and it's a pass/fail that flips at most once in a disk's life.
+        // Read it hourly and carry the verdict forward on the samples in between, so
+        // status.json and the disk watcher see a stable value without the per-sample spawn.
+        let now0 = crate::sensors::host::unix_time();
+        if now0.saturating_sub(last_smart) >= 3600 {
+            snap.read_smart();
+            last_smart = now0;
+            for h in &snap.disk_health {
+                if !h.smart.is_empty() {
+                    smart_cache.insert(h.bsd_name.clone(), h.smart.clone());
+                }
+            }
+        } else {
+            for h in &mut snap.disk_health {
+                if let Some(v) = smart_cache.get(&h.bsd_name) {
+                    h.smart = v.clone();
+                }
+            }
+        }
         let _ = snap.write_status();
         push_history(&mut history, &snap);
 
@@ -220,8 +241,18 @@ fn notify_os(title: &str, body: &str) {
         .status();
 }
 
+/// Escape a string for an AppleScript double-quoted literal. Besides backslash and quote,
+/// collapse newlines and other control characters to a space so a process or disk name
+/// can never break out of the literal (AppleScript ignores `\n` inside a literal anyway).
 fn osa_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.chars()
+        .map(|c| match c {
+            '\\' => "\\\\".to_string(),
+            '"' => "\\\"".to_string(),
+            c if (c as u32) < 0x20 => " ".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 /// PID of a live guard, if any (reads the pid file and probes the process).

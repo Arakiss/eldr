@@ -77,11 +77,10 @@ pub fn notify(workspace: &str, title: &str, subtitle: &str, body: &str) {
     ]);
 }
 
-/// Badge every workspace with the current thermal level (passive).
+/// Badge every workspace with the current thermal level (passive). One `list-workspaces`
+/// spawn: an empty result (cmux absent or no workspaces) short-circuits the loop, so no
+/// separate availability probe is needed.
 pub fn badge_all(level: &str, text: &str, color: &str) {
-    if !available() {
-        return;
-    }
     for ws in workspaces() {
         set_status(
             &ws,
@@ -95,9 +94,6 @@ pub fn badge_all(level: &str, text: &str, color: &str) {
 
 /// Clear the thermal badge everywhere.
 pub fn clear_all() {
-    if !available() {
-        return;
-    }
     for ws in workspaces() {
         clear_status(&ws, "thermal");
     }
@@ -105,9 +101,6 @@ pub fn clear_all() {
 
 /// Notify every workspace of an alert (passive).
 pub fn notify_all(title: &str, subtitle: &str, body: &str) {
-    if !available() {
-        return;
-    }
     for ws in workspaces() {
         notify(&ws, title, subtitle, body);
     }
