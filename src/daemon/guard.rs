@@ -88,6 +88,16 @@ pub fn run(interval_secs: u64) -> i32 {
         // Read it hourly and carry the verdict forward on the samples in between, so
         // status.json and the disk watcher see a stable value without the per-sample spawn.
         let now0 = crate::sensors::host::unix_time();
+        // Forget verdicts for disks no longer present, so a reused bsd_name can't inherit a
+        // removed disk's stale SMART value.
+        {
+            let live: HashSet<&str> = snap
+                .disk_health
+                .iter()
+                .map(|h| h.bsd_name.as_str())
+                .collect();
+            smart_cache.retain(|k, _| live.contains(k.as_str()));
+        }
         if now0.saturating_sub(last_smart) >= 3600 {
             snap.read_smart();
             last_smart = now0;

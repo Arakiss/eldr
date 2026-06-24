@@ -195,13 +195,22 @@ impl Watchdog {
     /// SIGSTOP the top non-protected CPU hog (auto-SIGCONT on recovery).
     fn do_suspend(&self, snap: &Snapshot, agents: &[i32], dry: bool) -> Vec<Action> {
         let mut actions = Vec::new();
-        let Some(top) = snap.top_procs.first() else {
+        // The top CPU process is often protected (a shell, node, an agent, a terminal).
+        // Fall through to the first non-protected hog instead of giving up, so a real
+        // reversible runaway ranked below it still gets suspended.
+        let Some(top) = snap
+            .top_procs
+            .iter()
+            .find(|p| !is_protected(p.pid, &p.name, agents))
+        else {
+            if let Some(first) = snap.top_procs.first() {
+                wlog(&format!(
+                    "  suspend skipped: top procs protected (top={})",
+                    first.name
+                ));
+            }
             return actions;
         };
-        if is_protected(top.pid, &top.name, agents) {
-            wlog(&format!("  suspend skipped: top={} protected", top.name));
-            return actions;
-        }
         if dry {
             let a = Action {
                 kind: "suspend",

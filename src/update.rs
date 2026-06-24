@@ -23,7 +23,12 @@ pub fn current() -> &'static str {
 pub fn parse_tag(json: &str) -> Option<String> {
     let key = "\"tag_name\"";
     let after = &json[json.find(key)? + key.len()..];
-    let after = &after[after.find(':')? + 1..];
+    let after = after[after.find(':')? + 1..].trim_start();
+    // The value must be a JSON string; a `null`/number (draft or malformed release) yields
+    // None instead of bleeding into the next field.
+    if !after.starts_with('"') {
+        return None;
+    }
     let start = after.find('"')? + 1;
     let end = after[start..].find('"')? + start;
     let tag = after[start..end].trim().trim_start_matches('v');

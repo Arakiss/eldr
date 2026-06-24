@@ -324,6 +324,7 @@ impl Snapshot {
         // Cheap counters-only read — the full disks() (identity + NVMe SMART) runs once,
         // after the window, when building disk_health.
         let disks_t0 = crate::ffi::iostat::disk_bytes();
+        let disk_t0_at = std::time::Instant::now();
 
         // SoC sample sleeps `duration_ms` internally; if IOReport is unavailable we
         // sleep ourselves so the host deltas still have a window.
@@ -355,7 +356,9 @@ impl Snapshot {
         s.disk = Some(hm.disk);
         s.volumes = hm.volumes;
         // Second disk read after the window; throughput = byte delta / window seconds.
-        let dt = duration_ms.max(1) as f64 / 1000.0;
+        // Real elapsed across the disk window (not the nominal duration) — the sample does
+        // SoC/host work too, so the true interval is what the byte delta should divide by.
+        let dt = disk_t0_at.elapsed().as_secs_f64().max(1e-3);
         let prev: std::collections::HashMap<String, (u64, u64)> = disks_t0
             .into_iter()
             .map(|(name, rb, wb)| (name, (rb, wb)))
