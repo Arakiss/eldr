@@ -1,7 +1,7 @@
 //! Human-readable text output: the `now`/`status` panel and the terse `check` line.
 
 use crate::ffi::smc;
-use crate::sensors::snapshot::{Level, Snapshot, Thermal};
+use crate::sensors::snapshot::{HOG_CPU_PCT, HOG_RAM_FRAC, Level, Snapshot, Thermal};
 use crate::ui::style::{Style, bar, gib, human_bytes, sparkline};
 
 fn level_color(st: &Style, lvl: Level) -> &'static str {
@@ -201,6 +201,32 @@ pub fn panel(s: &Snapshot, note: &str) {
             )
         };
         println!("  {d}Dsk{z}   {line}", d = st.dim, z = st.reset);
+    }
+
+    // Resource-hog callout (mirrors the TUI and guard): name what's slowing the Mac.
+    if let Some(p) = s.top_procs.iter().find(|p| p.cpu >= HOG_CPU_PCT) {
+        println!(
+            "  {r}⚠ {} is using {:.0}% CPU{z} {d}— likely the slowdown{z}",
+            p.name,
+            p.cpu,
+            r = st.red,
+            z = st.reset,
+            d = st.dim,
+        );
+    } else if let Some(p) = s
+        .top_mem
+        .iter()
+        .find(|p| p.mem as f64 / s.ram_total.max(1) as f64 >= HOG_RAM_FRAC)
+    {
+        println!(
+            "  {r}⚠ {} is holding {:.1} GB RAM{z} {d}({:.0}% of memory){z}",
+            p.name,
+            gib(p.mem),
+            p.mem as f64 / s.ram_total.max(1) as f64 * 100.0,
+            r = st.red,
+            z = st.reset,
+            d = st.dim,
+        );
     }
 
     // Top processes
