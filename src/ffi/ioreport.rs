@@ -128,6 +128,13 @@ impl IOReport {
             unsafe { CFRelease(chan as CFDictionaryRef) };
             return None;
         }
+        // `IOReportCreateSubscription` writes a freshly-created "subscribed channels" dict
+        // into the out-param, owned by us. We sample with `chan`, not this copy, so it must
+        // be released or every subscription leaks a full channel dictionary (~100 KB) — the
+        // dominant per-sample leak in a long-running guard/TUI.
+        if !subbed.is_null() {
+            unsafe { CFRelease(subbed as CFDictionaryRef) };
+        }
         Some(IOReport { subs, chan })
     }
 

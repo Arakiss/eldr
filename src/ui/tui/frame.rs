@@ -110,19 +110,26 @@ pub(super) fn render_styled(
     blank(&mut f);
 
     // ---- body ----
+    // Build the body into its own buffer so it can be clamped: a tab that over-estimates
+    // its height (the tall-chart tabs) must never push the header/footer off-screen and
+    // scroll the panel. The header is 4 lines; reserve the footer too.
     let rows = rows as usize;
+    let footer_lines = 1 + if ui.help { 2 } else { 1 };
+    let mut body = String::new();
     match ui.tab {
-        0 => views::body_overview(s, h, id, &st, w, ncols, rows, &line, &blank, &mut f),
-        1 => views::body_cpu(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
-        2 => views::body_cooling(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
-        3 => views::body_memory(s, &st, w, ncols, rows, &line, &blank, &mut f),
-        4 => views::body_energy(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
-        5 => views::body_battery(s, &st, w, ncols, rows, &line, &blank, &mut f),
-        _ => views::body_storage(s, id, &st, w, ncols, rows, &line, &blank, &mut f),
+        0 => views::body_overview(s, h, id, &st, w, ncols, rows, &line, &blank, &mut body),
+        1 => views::body_cpu(s, h, &st, w, ncols, rows, &line, &blank, &mut body),
+        2 => views::body_cooling(s, h, &st, w, ncols, rows, &line, &blank, &mut body),
+        3 => views::body_memory(s, &st, w, ncols, rows, &line, &blank, &mut body),
+        4 => views::body_energy(s, h, &st, w, ncols, rows, &line, &blank, &mut body),
+        5 => views::body_battery(s, &st, w, ncols, rows, &line, &blank, &mut body),
+        6 => views::body_network(s, h, &st, w, ncols, rows, &line, &blank, &mut body),
+        _ => views::body_storage(s, id, &st, w, ncols, rows, &line, &blank, &mut body),
     }
+    clamp_lines(&mut body, rows.saturating_sub(4 + footer_lines));
+    f.push_str(&body);
 
     // ---- footer pinned to the bottom (pad with the real row count) ----
-    let footer_lines = 1 + if ui.help { 2 } else { 1 };
     let target = rows.saturating_sub(footer_lines);
     while f.matches('\n').count() < target {
         blank(&mut f);
@@ -147,7 +154,7 @@ pub(super) fn render_styled(
         };
         line(
             format!(
-                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-7{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
+                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-8{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
             ),
             &mut f,
         );
@@ -155,4 +162,23 @@ pub(super) fn render_styled(
 
     f.push_str(term::clear_eos());
     f
+}
+
+/// Keep at most `max` newline-terminated lines of `s`, dropping the rest. The safety net
+/// that stops an over-tall body from scrolling the header and footer off the panel.
+fn clamp_lines(s: &mut String, max: usize) {
+    let mut count = 0;
+    let mut cut = None;
+    for (i, b) in s.bytes().enumerate() {
+        if b == b'\n' {
+            count += 1;
+            if count == max {
+                cut = Some(i + 1);
+                break;
+            }
+        }
+    }
+    if let Some(c) = cut {
+        s.truncate(c);
+    }
 }

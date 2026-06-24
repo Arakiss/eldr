@@ -67,7 +67,7 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut history: Vec<(f64, u32, f32)> = Vec::new();
     let mut disk_prev: HashMap<String, (u64, u64)> = HashMap::new();
     let mut disk_alerted: HashSet<String> = HashSet::new();
-    let mut hogs = HogWatch::default();
+    let mut hogs = HogWatch::from_config(&config::Config::load());
     let mut last_maint: u64 = 0; // 0 ⇒ run housekeeping once at startup
     let mut warned_big = false;
     while !STOP.load(Ordering::SeqCst) {
@@ -318,8 +318,11 @@ struct HogAlert {
 /// fires once when a process (or memory itself) crosses a threshold for `HOG_SUSTAIN`
 /// samples, and clears the latch when it recovers so a later resurgence re-alerts. Like
 /// everything in the guard, it only NOTIFIES — never kills, suspends, or shuts down.
-#[derive(Default)]
+/// Thresholds default to the shared `HOG_*` constants and can be tuned in config.toml
+/// (`ELDR_HOG_CPU` percent, `ELDR_HOG_RAM` fraction of total RAM).
 struct HogWatch {
+    cpu_pct: f32,
+    ram_frac: f64,
     cpu_streak: HashMap<i32, u32>,
     cpu_alerted: HashSet<i32>,
     ram_streak: HashMap<i32, u32>,
@@ -329,21 +332,47 @@ struct HogWatch {
     swap_prev: Option<u64>,
 }
 
+impl Default for HogWatch {
+    fn default() -> Self {
+        HogWatch {
+            cpu_pct: HOG_CPU_PCT,
+            ram_frac: HOG_RAM_FRAC,
+            cpu_streak: HashMap::new(),
+            cpu_alerted: HashSet::new(),
+            ram_streak: HashMap::new(),
+            ram_alerted: HashSet::new(),
+            mem_streak: 0,
+            mem_alerted: false,
+            swap_prev: None,
+        }
+    }
+}
+
 impl HogWatch {
+    /// Load with thresholds overridable from config.toml.
+    fn from_config(cfg: &config::Config) -> Self {
+        HogWatch {
+            cpu_pct: cfg.float("ELDR_HOG_CPU", HOG_CPU_PCT as f64) as f32,
+            ram_frac: cfg.float("ELDR_HOG_RAM", HOG_RAM_FRAC),
+            ..Self::default()
+        }
+    }
+
     /// Advance one sample and return the alerts to fire this tick (usually none).
     fn check(&mut self, s: &Snapshot) -> Vec<HogAlert> {
         let mut out = Vec::new();
+        let (cpu_pct, ram_frac) = (self.cpu_pct, self.ram_frac);
 
-        // CPU hogs — any top process sustaining ≥ HOG_CPU_PCT across cores.
+        // CPU hogs — any top process sustaining ≥ the CPU threshold across cores.
         let cpu_now: HashSet<i32> = s
             .top_procs
             .iter()
-            .filter(|p| p.cpu >= HOG_CPU_PCT)
+            .filter(|p| p.cpu >= cpu_pct)
             .map(|p| p.pid)
             .collect();
         self.cpu_streak.retain(|pid, _| cpu_now.contains(pid));
         self.cpu_alerted.retain(|pid| cpu_now.contains(pid));
-        for p in s.top_procs.iter().filter(|p| p.cpu >= HOG_CPU_PCT) {
+        for p in s.top_procs.iter().filter(|p| p.cpu >= cpu_pct) {
             let n = self.cpu_streak.entry(p.pid).or_insert(0);
             *n += 1;
             if *n >= HOG_SUSTAIN && self.cpu_alerted.insert(p.pid) {
@@ -351,9 +380,9 @@ impl HogWatch {
             }
         }
 
-        // RAM hogs — any top process holding ≥ HOG_RAM_FRAC of physical memory.
+        // RAM hogs — any top process holding ≥ the RAM-fraction threshold.
         let total = s.ram_total.max(1);
-        let is_ram_hog = |p: &ProcInfo| (p.mem as f64 / total as f64) >= HOG_RAM_FRAC;
+        let is_ram_hog = |p: &ProcInfo| (p.mem as f64 / total as f64) >= ram_frac;
         let ram_now: HashSet<i32> = s
             .top_mem
             .iter()

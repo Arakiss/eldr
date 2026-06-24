@@ -65,6 +65,12 @@ impl Config {
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(default)
     }
+
+    pub fn float(&self, key: &str, default: f64) -> f64 {
+        self.get(key)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default)
+    }
 }
 
 /// `$XDG_CONFIG_HOME/eldr/config.toml` or `~/.config/eldr/config.toml`.

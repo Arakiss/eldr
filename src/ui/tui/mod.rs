@@ -1,12 +1,12 @@
 //! The Eldr live dashboard: a tabbed, responsive ANSI panel over [`crate::ui::term`].
-//! Seven views (Overview · CPU · Cooling · Memory · Energy · Battery · Storage) sharing
-//! an identical header/footer; only the body swaps, like a segmented control. The width
+//! Eight views (Overview · CPU · Cooling · Memory · Energy · Battery · Network · Storage)
+//! sharing an identical header/footer; only the body swaps, like a segmented control. Width
 //! tracks the terminal (up to 400 columns) so a wide screen fills with high-resolution
 //! braille charts; narrow terminals fall back to a single stacked column. The Overview
 //! is a dashboard wall — four tall braille charts (CPU·GPU·PWR·NET) filling the height
 //! over a band of compact panels, degrading to compact single-row lanes when narrow.
 //! Sampling runs off-thread so keys and quit are instant. Keys: `q`/Ctrl-C quit,
-//! `←/→` or `Tab` or `1`-`7` switch view, `space` pause, `+`/`-` speed, `?` help.
+//! `←/→` or `Tab` or `1`-`8` switch view, `space` pause, `+`/`-` speed, `?` help.
 //!
 //! The module is split by concern: this file owns the engine (sampling loop, key
 //! handling, rolling history), [`fmt`] the text/colour helpers, [`frame`] the chrome
@@ -32,9 +32,9 @@ const SAMPLE_MS: u64 = 250;
 const HIST: usize = 512;
 const MIN_INTERVAL: u64 = 250;
 const MAX_INTERVAL: u64 = 5000;
-const NTABS: u8 = 7;
-pub(super) const TABS: [&str; 7] = [
-    "Overview", "CPU", "Cooling", "Memory", "Energy", "Battery", "Storage",
+const NTABS: u8 = 8;
+pub(super) const TABS: [&str; 8] = [
+    "Overview", "CPU", "Cooling", "Memory", "Energy", "Battery", "Network", "Storage",
 ];
 
 /// Mutable view state the key handler drives.
@@ -418,8 +418,26 @@ mod tests {
     }
 
     #[test]
+    fn no_tab_overflows_its_rows() {
+        // Every tab must fit within the terminal height — an over-tall body scrolls the
+        // header (the tab strip) off the panel. Check a wide/short screen and a laptop.
+        let s = snap();
+        let h = hist();
+        for &(cols, rows) in &[(229u16, 29u16), (200, 32), (120, 40), (90, 24)] {
+            for tab in 0..NTABS {
+                let out = render_sized(&s, &h, &ui(tab), &ident(), cols, rows);
+                let lines = out.matches('\n').count();
+                assert!(
+                    lines <= rows as usize,
+                    "tab {tab} at {cols}x{rows} emitted {lines} lines (> {rows})",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cooling_tab_shows_thermal_and_fans() {
-        let out = render(&snap(), &hist(), &ui(2), &ident());
+        let out = render_sized(&snap(), &hist(), &ui(2), &ident(), 120, 48);
         assert!(out.contains("Thermal"));
         assert!(out.contains("CPU temp"));
         assert!(out.contains("Fan history"));
@@ -428,7 +446,7 @@ mod tests {
 
     #[test]
     fn memory_tab_is_unmistakable() {
-        let out = render(&snap(), &hist(), &ui(3), &ident());
+        let out = render_sized(&snap(), &hist(), &ui(3), &ident(), 120, 48);
         assert!(out.contains("In use"));
         assert!(out.contains("available"));
         assert!(out.contains("Pressure"));
@@ -437,7 +455,7 @@ mod tests {
 
     #[test]
     fn memory_tab_explains_why() {
-        let out = render(&snap(), &hist(), &ui(3), &ident());
+        let out = render_sized(&snap(), &hist(), &ui(3), &ident(), 120, 48);
         // The pressure now carries a reason and names the biggest holder.
         assert!(out.contains("why →"));
         assert!(out.contains("reclaimable"));
@@ -458,9 +476,17 @@ mod tests {
 
     #[test]
     fn storage_tab_shows_real_ssd() {
-        let out = render(&snap(), &hist(), &ui(6), &ident());
+        let out = render(&snap(), &hist(), &ui(7), &ident());
         assert!(out.contains("APPLE SSD AP0512Z"));
         assert!(out.contains("22 GB"));
+    }
+
+    #[test]
+    fn network_tab_shows_rates() {
+        let out = render(&snap(), &hist(), &ui(6), &ident());
+        assert!(out.contains("Network"));
+        assert!(out.contains("DOWNLOAD"));
+        assert!(out.contains("UPLOAD"));
     }
 
     #[test]
