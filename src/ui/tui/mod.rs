@@ -423,7 +423,14 @@ mod tests {
         // header (the tab strip) off the panel. Check a wide/short screen and a laptop.
         let s = snap();
         let h = hist();
-        for &(cols, rows) in &[(229u16, 29u16), (200, 32), (120, 40), (90, 24)] {
+        // Include the tiny-terminal danger zone (rows 1..=8): clamp_lines(0) and the chrome
+        // floor must keep even a 1-row terminal from scrolling the header off.
+        let mut sizes: Vec<(u16, u16)> = vec![(229, 29), (200, 32), (120, 40), (90, 24), (56, 10)];
+        for r in 1u16..=8 {
+            sizes.push((80, r));
+            sizes.push((229, r));
+        }
+        for &(cols, rows) in &sizes {
             for tab in 0..NTABS {
                 let out = render_sized(&s, &h, &ui(tab), &ident(), cols, rows);
                 // Strictly fewer newlines than rows: emitting a '\n' on the last row scrolls

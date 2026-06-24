@@ -1170,7 +1170,7 @@ pub(super) fn body_storage(
             .fold((0.0, 0.0), |(r, w), h| (r + h.read_rate, w + h.write_rate));
         line(
             format!(
-                " {d}Disks{z}   {fr}↓{}/s ↑{}/s{z} {d}total I/O{z}",
+                " {d}Disks{z}   {fr}↓{} ↑{}{z} {d}total I/O{z}",
                 fmt_rate(tr),
                 fmt_rate(tw),
                 fr = st.fire,

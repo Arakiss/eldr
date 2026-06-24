@@ -3,6 +3,32 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
+## [0.11.4] — unreleased
+
+From a correctness & robustness audit (15 findings examined, each adversarially verified;
+the 11 confirmed, all low-risk, applied here).
+
+### Fixed
+- **Tiny terminals no longer scroll the header off.** `clamp_lines(0)` was a no-op, so at
+  `rows <= 6` a tab's whole body was emitted; and below the chrome floor there was no
+  fallback. Now `clamp_lines(0)` clears the body and `rows < 6` shows a single clipped line.
+  The overflow regression test now sweeps the 1..8-row danger zone.
+- **Watchdog suspends the first non-protected hog**, not only the #1 process: if the top
+  CPU process is protected (a shell, an agent, a terminal), it now falls through to a real
+  reversible target instead of giving up.
+- **No double `/s/s`** on the Storage tab's total-I/O line.
+- **Robustness against odd inputs (no panics):** `host_processor_info` is bounded by the
+  integer count the kernel actually returned (no out-of-bounds read on a short reply);
+  memory page-count sums are computed in u64 (no u32 overflow on very large RAM);
+  filesystem size = blocks × block-size uses `saturating_mul`.
+- **Disk throughput** divides the byte delta by the real elapsed window (not the nominal
+  duration), matching how network rates are computed.
+- **Update check** ignores a non-string `tag_name` (draft/malformed GitHub JSON) instead of
+  mis-parsing the next field.
+- **SMART carry-forward** drops cached verdicts for disks no longer present, so a reused
+  `bsd_name` can't inherit a removed disk's stale verdict.
+- The footer bottom-pad loop is O(rows) instead of O(rows²).
+
 ## [0.11.3] — unreleased
 
 ### Fixed

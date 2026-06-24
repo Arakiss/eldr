@@ -53,6 +53,23 @@ pub(super) fn render_styled(
     let z = st.reset;
     let b = st.bold;
 
+    // Below the chrome floor (header 4 + footer 2) there's no room for a real frame;
+    // show one clipped line (no trailing newline ⇒ no scroll) instead of a torn panel.
+    if (rows as usize) < 6 {
+        let mut f = String::from(term::home());
+        f.push_str(&fit(
+            &format!(
+                " {b}eldr{z} {fire}v{ver}{z} {d}— terminal too short{z}",
+                fire = st.fire,
+                ver = env!("CARGO_PKG_VERSION"),
+            ),
+            w,
+        ));
+        f.push_str(term::clear_eol());
+        f.push_str(term::clear_eos());
+        return f;
+    }
+
     let mut f = String::with_capacity(8192);
     f.push_str(term::home());
     let rule = "─".repeat(w.saturating_sub(2));
@@ -137,8 +154,10 @@ pub(super) fn render_styled(
 
     // ---- footer pinned to the bottom (pad with the real row count) ----
     let target = rows.saturating_sub(footer_lines);
-    while f.matches('\n').count() < target {
+    let mut have = f.matches('\n').count();
+    while have < target {
         blank(&mut f);
+        have += 1;
     }
     line(format!(" {d}{rule}{z}"), &mut f);
     if ui.help {
@@ -179,6 +198,10 @@ pub(super) fn render_styled(
 /// Keep at most `max` newline-terminated lines of `s`, dropping the rest. The safety net
 /// that stops an over-tall body from scrolling the header and footer off the panel.
 fn clamp_lines(s: &mut String, max: usize) {
+    if max == 0 {
+        s.clear();
+        return;
+    }
     let mut count = 0;
     let mut cut = None;
     for (i, b) in s.bytes().enumerate() {

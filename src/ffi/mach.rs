@@ -269,8 +269,12 @@ pub fn mem_info() -> MemInfo {
     let app = p(stats
         .internal_page_count
         .saturating_sub(stats.purgeable_count));
-    // File-backed + purgeable + read-ahead: all reclaimable under pressure.
-    let cached = p(stats.external_page_count + stats.purgeable_count + stats.speculative_count);
+    // File-backed + purgeable + read-ahead: all reclaimable under pressure. Sum in u64 —
+    // three u32 page counts can overflow a u32 on a very large-memory machine.
+    let cached = (stats.external_page_count as u64
+        + stats.purgeable_count as u64
+        + stats.speculative_count as u64)
+        * page;
     let used = wired + compressed + app;
     let available = free + cached;
     let compressed_holds = stats.total_uncompressed_pages_in_compressor * page;
@@ -330,9 +334,12 @@ pub fn cpu_ticks() -> Vec<[u64; 4]> {
     if rc != 0 || info.is_null() {
         return Vec::new();
     }
-    let mut out = Vec::with_capacity(count as usize);
+    // Trust the returned integer count, not `count * 4`: never read past the buffer the
+    // kernel actually filled (a short reply yields fewer cores, not an OOB read).
+    let cores = (info_count as usize / 4).min(count as usize);
+    let mut out = Vec::with_capacity(cores);
     unsafe {
-        for i in 0..count as usize {
+        for i in 0..cores {
             let base = i * 4;
             out.push([
                 *info.add(base) as u32 as u64,
@@ -452,7 +459,10 @@ pub fn disk(path: &str) -> (u64, u64) {
         return (0, 0);
     }
     let bs = sf.f_bsize as u64;
-    (sf.f_blocks * bs, sf.f_bavail * bs)
+    (
+        sf.f_blocks.saturating_mul(bs),
+        sf.f_bavail.saturating_mul(bs),
+    )
 }
 
 // MARK: volumes (every mounted filesystem)
@@ -500,8 +510,8 @@ pub fn volumes() -> Vec<VolumeStat> {
                 mount_point: cstr_field(&sf.f_mntonname),
                 device: cstr_field(&sf.f_mntfromname),
                 fs: cstr_field(&sf.f_fstypename),
-                total: sf.f_blocks * bs,
-                free: sf.f_bavail * bs,
+                total: sf.f_blocks.saturating_mul(bs),
+                free: sf.f_bavail.saturating_mul(bs),
                 local: sf.f_flags & MNT_LOCAL != 0,
                 read_only: sf.f_flags & MNT_RDONLY != 0,
                 browsable: sf.f_flags & MNT_DONTBROWSE == 0,
