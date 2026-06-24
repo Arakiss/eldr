@@ -203,7 +203,18 @@ fn notify_corruption(root: &str, corrupt: &[String]) {
         "{} file(s) corrupted under {root} — restore from backup",
         corrupt.len()
     );
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    // Escape for an AppleScript literal; collapse control chars (a corrupt path can't
+    // break out of the string and inject AppleScript).
+    let esc = |s: &str| -> String {
+        s.chars()
+            .map(|c| match c {
+                '\\' => "\\\\".to_string(),
+                '"' => "\\\"".to_string(),
+                c if (c as u32) < 0x20 => " ".to_string(),
+                c => c.to_string(),
+            })
+            .collect()
+    };
     let script = format!(
         "display notification \"{}\" with title \"eldr · data integrity\" sound name \"Basso\"",
         esc(&body)
