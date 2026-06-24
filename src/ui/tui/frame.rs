@@ -76,11 +76,16 @@ pub(super) fn render_styled(
     } else {
         id.label.clone()
     };
+    let ver = env!("CARGO_PKG_VERSION");
     let right = format!("{head}  ·  up {}", fmt_uptime(s.uptime_secs));
     line(
         format!(
-            " {b}eldr{z}  {d}{ident}{z}{sp}{lc}●{z} {b}{head}{z} {d}· up {up}{z}",
-            sp = pad(7 + ident.chars().count(), right.chars().count() + 2),
+            " {b}eldr{z} {d}v{ver}{z}  {d}{ident}{z}{sp}{lc}●{z} {b}{head}{z} {d}· up {up}{z}",
+            // visible prefix before ident: " eldr v{ver}  " = 9 + ver.len()
+            sp = pad(
+                9 + ver.len() + ident.chars().count(),
+                right.chars().count() + 2
+            ),
             up = fmt_uptime(s.uptime_secs),
         ),
         &mut f,

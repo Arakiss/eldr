@@ -3,7 +3,23 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
-## [0.11.0] — unreleased
+## [0.11.1] — unreleased
+
+### Added
+- **TUI shows the eldr version** in the header (`eldr vX.Y.Z`), so it's easy to tell which
+  build is on screen.
+
+### Security / hardening (the deferred audit findings)
+- **Data directory is now owner-only (0700)** and the pid file 0600, so another local user
+  can't read status, logs (which name processes), the pid, or scrub manifests.
+- **`running_pid()` validates identity** — it confirms the pid is actually an `eldr` process
+  (via libproc) before treating it as the guard, so a recycled pid can't suppress a restart
+  or make `guard-stop` SIGTERM an unrelated process.
+- **history.csv written atomically** (temp + rename), so the TUI never reads a torn file.
+- **launchd plist `PATH` puts system dirs first** (`/usr/bin:/bin:…` before Homebrew /
+  `~/.local/bin`), so the long-lived guard resolves system tools from system locations.
+
+## [0.11.0]
 
 From a hardening + resource audit of the guard daemon (the long-lived process).
 

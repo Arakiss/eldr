@@ -36,7 +36,7 @@ fn render_plist(exe: &str, interval: u32, dir: &str, log: &str) -> String {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:{home}/.local/bin:/Applications/cmux.app/Contents/Resources/bin</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:{home}/.local/bin:/Applications/cmux.app/Contents/Resources/bin</string>
     <key>ELDR_DIR</key><string>{dir}</string>
     <key>LC_ALL</key><string>en_US.UTF-8</string>
   </dict>
