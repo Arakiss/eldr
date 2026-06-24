@@ -116,6 +116,10 @@ pub struct DiskHealth {
     pub write_retries: u64,
     pub read_latency_ms: f32,
     pub write_latency_ms: f32,
+    /// Live throughput in bytes/s over the sample window (delta of cumulative byte
+    /// counters between two reads). Zero on the first read or a counter reset.
+    pub read_rate: f64,
+    pub write_rate: f64,
     /// Firmware NVMe SMART telemetry (temp, wear, TBW), when the disk exposes it.
     pub nvme: Option<crate::ffi::nvme::NvmeSmart>,
 }
@@ -143,6 +147,8 @@ impl DiskHealth {
             write_errors: d.write_errors,
             read_retries: d.read_retries,
             write_retries: d.write_retries,
+            read_rate: 0.0,
+            write_rate: 0.0,
             nvme: d.nvme,
         }
     }
@@ -314,6 +320,8 @@ impl Snapshot {
 
         // t0 for interval host metrics
         let ht0 = host::start();
+        // t0 for disk byte counters, to derive throughput over the same window (like net).
+        let disks_t0 = crate::ffi::iostat::disks();
 
         // SoC sample sleeps `duration_ms` internally; if IOReport is unavailable we
         // sleep ourselves so the host deltas still have a window.
@@ -344,9 +352,22 @@ impl Snapshot {
         s.uptime_secs = hm.uptime_secs;
         s.disk = Some(hm.disk);
         s.volumes = hm.volumes;
+        // Second disk read after the window; throughput = byte delta / window seconds.
+        let dt = duration_ms.max(1) as f64 / 1000.0;
+        let prev: std::collections::HashMap<String, (u64, u64)> = disks_t0
+            .iter()
+            .map(|d| (d.bsd_name.clone(), (d.read_bytes, d.write_bytes)))
+            .collect();
         s.disk_health = crate::ffi::iostat::disks()
             .into_iter()
-            .map(DiskHealth::from_stat)
+            .map(|d| {
+                let (rb, wb) = (d.read_bytes, d.write_bytes);
+                let p = prev.get(&d.bsd_name).copied();
+                let mut h = DiskHealth::from_stat(d);
+                h.read_rate = byte_rate(p.map(|x| x.0), rb, dt);
+                h.write_rate = byte_rate(p.map(|x| x.1), wb, dt);
+                h
+            })
             .collect();
         s.net = Some(hm.net);
         s.top_procs = hm.top;
@@ -610,7 +631,7 @@ impl Snapshot {
                     None => "null".to_string(),
                 };
                 format!(
-                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"interconnect\":\"{}\",\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"nvme\":{}}}",
+                    "{{\"bsd\":\"{}\",\"model\":\"{}\",\"external\":{},\"interconnect\":\"{}\",\"solid_state\":{},\"smart\":\"{}\",\"read_errors\":{},\"write_errors\":{},\"read_retries\":{},\"write_retries\":{},\"read_latency_ms\":{},\"write_latency_ms\":{},\"read_rate\":{},\"write_rate\":{},\"nvme\":{}}}",
                     json_escape(&h.bsd_name),
                     json_escape(&h.model),
                     h.external,
@@ -623,6 +644,8 @@ impl Snapshot {
                     h.write_retries,
                     fmt_f(h.read_latency_ms),
                     fmt_f(h.write_latency_ms),
+                    fmt_f(h.read_rate as f32),
+                    fmt_f(h.write_rate as f32),
                     nvme,
                 )
             })
@@ -735,6 +758,16 @@ impl JsonObj {
     fn finish(mut self) -> String {
         self.buf.push('}');
         self.buf
+    }
+}
+
+/// Bytes/s from the delta of a cumulative counter over `dt` seconds. Zero on the first
+/// read (`prev` is `None`) or a counter reset (`cur < prev`), so it never reports a
+/// spurious burst — the same discipline as the disk error-growth check.
+fn byte_rate(prev: Option<u64>, cur: u64, dt: f64) -> f64 {
+    match prev {
+        Some(p) if cur >= p && dt > 0.0 => (cur - p) as f64 / dt,
+        _ => 0.0,
     }
 }
 
@@ -879,6 +912,18 @@ mod tests {
         assert!(j.contains("\"schema_version\":\"1\"")); // agent contract version
         assert!(j.contains("\\\"M4\\\"")); // escaped quotes
         assert!(j.contains("a\\\\b")); // escaped backslash
+    }
+
+    #[test]
+    fn byte_rate_is_safe() {
+        // First read: no previous counter, so no rate.
+        assert_eq!(byte_rate(None, 1000, 1.0), 0.0);
+        // 1000 bytes over 0.5 s = 2000 B/s.
+        assert_eq!(byte_rate(Some(0), 1000, 0.5), 2000.0);
+        // Counter reset (boot / device re-enumeration) must not report a burst.
+        assert_eq!(byte_rate(Some(5000), 10, 1.0), 0.0);
+        // Zero elapsed: guard against division blow-up.
+        assert_eq!(byte_rate(Some(0), 1000, 0.0), 0.0);
     }
 
     #[test]

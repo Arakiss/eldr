@@ -1065,7 +1065,18 @@ pub(super) fn body_storage(
         .collect();
     if !disks.is_empty() {
         blank(f);
-        line(format!(" {d}Disks{z}"), f);
+        let (tr, tw) = disks
+            .iter()
+            .fold((0.0, 0.0), |(r, w), h| (r + h.read_rate, w + h.write_rate));
+        line(
+            format!(
+                " {d}Disks{z}   {fr}↓{}/s ↑{}/s{z} {d}total I/O{z}",
+                fmt_rate(tr),
+                fmt_rate(tw),
+                fr = st.fire,
+            ),
+            f,
+        );
         for hd in disks {
             let model = if hd.model.is_empty() {
                 hd.bsd_name.clone()
@@ -1085,11 +1096,14 @@ pub(super) fn body_storage(
             let errc = if hd.errors() > 0 { st.red } else { d };
             line(
                 format!(
-                    "   {b}{model}{z}  {d}{where_} · {} · {kind}{z}  {errc}err {}{z}{d} · retry {}{z}{wear}{temp}",
+                    "   {b}{model}{z}  {d}{where_} · {} · {kind}{z}  {fr}↓{} ↑{}{z}  {errc}err {}{z}{d} · retry {}{z}{wear}{temp}",
                     hd.interconnect,
+                    fmt_rate(hd.read_rate),
+                    fmt_rate(hd.write_rate),
                     hd.errors(),
                     hd.retries(),
                     b = st.bold,
+                    fr = st.fire,
                 ),
                 f,
             );
