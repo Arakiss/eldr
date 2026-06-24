@@ -3,7 +3,31 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
-## [0.10.0] — unreleased
+## [0.11.0] — unreleased
+
+From a hardening + resource audit of the guard daemon (the long-lived process).
+
+### Performance (the daemon now does far less per sample)
+- **SMART verdict read hourly, not every 30 s.** `read_smart()` shells out to `diskutil`
+  per physical disk; the guard ran it on every sample (~2,880×N spawns/day). It's a
+  pass/fail that flips at most once in a disk's life, so it's now read hourly with the
+  verdict carried forward in between — ~120× fewer process spawns, identical alerting and
+  `status.json`.
+- **Cheap t0 disk read.** `gather()` read the full disk set (recursive IOKit traversal +
+  the NVMe SMART firmware plugin) twice per sample just to seed the throughput delta. The
+  pre-window read is now counters-only (`iostat::disk_bytes`), roughly halving disk-path
+  FFI work; the full read still runs once for `disk_health`.
+- **cmux badges/notifications spawn `cmux list-workspaces` once**, not twice, per call.
+
+### Security (hardening)
+- **AppleScript-injection hardening.** macOS notification text (built from process names,
+  disk models, corrupt file paths) now collapses newlines/control characters so a crafted
+  name can't break out of the `osascript` string literal — in both the guard and the
+  scrubber.
+- **`status.json` temp file is per-process** (`status.json.<pid>.tmp`), so a concurrent
+  writer (the guard plus a one-shot `eldr now`) can't clobber a half-written temp.
+
+## [0.10.0]
 
 ### Added
 - **`eldr doctor`** — a one-shot self-check: version (and whether a newer one is known),

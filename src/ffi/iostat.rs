@@ -51,6 +51,38 @@ pub fn disks() -> Vec<DiskStat> {
     out
 }
 
+/// Just `(bsd_name, read_bytes, write_bytes)` per device — the cheap subset of [`disks`]
+/// for seeding a throughput delta. Skips the identity dictionaries and the NVMe SMART
+/// firmware plugin, so it's far lighter than a full [`disks`] read on the per-sample path
+/// (where the t0 read only needs the byte counters).
+pub fn disk_bytes() -> Vec<(String, u64, u64)> {
+    let Some(it) = IOServiceIterator::new("IOBlockStorageDevice") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (entry, _name) in it {
+        let bsd = entry_search_property(entry, "BSD Name").map(|v| {
+            let s = cf::from_cfstr(v);
+            unsafe { cf::CFRelease(v) };
+            s
+        });
+        if let Some(bsd) = bsd.filter(|s| !s.is_empty())
+            && let Some(stats) = entry_search_property(entry, "Statistics")
+        {
+            let g = |k: &str| {
+                cf::cfdict_get_val(stats as CFDictionaryRef, k)
+                    .and_then(cf::cfnum_i64)
+                    .unwrap_or(0)
+                    .max(0) as u64
+            };
+            out.push((bsd, g("Bytes (Read)"), g("Bytes (Write)")));
+            unsafe { cf::CFRelease(stats) };
+        }
+        unsafe { IOObjectRelease(entry) };
+    }
+    out
+}
+
 fn read_disk(entry: u32) -> Option<DiskStat> {
     let props = entry_properties(entry)?;
     // Identity lives on this node (Device/Protocol Characteristics sub-dicts).

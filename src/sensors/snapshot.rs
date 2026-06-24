@@ -321,7 +321,9 @@ impl Snapshot {
         // t0 for interval host metrics
         let ht0 = host::start();
         // t0 for disk byte counters, to derive throughput over the same window (like net).
-        let disks_t0 = crate::ffi::iostat::disks();
+        // Cheap counters-only read — the full disks() (identity + NVMe SMART) runs once,
+        // after the window, when building disk_health.
+        let disks_t0 = crate::ffi::iostat::disk_bytes();
 
         // SoC sample sleeps `duration_ms` internally; if IOReport is unavailable we
         // sleep ourselves so the host deltas still have a window.
@@ -355,8 +357,8 @@ impl Snapshot {
         // Second disk read after the window; throughput = byte delta / window seconds.
         let dt = duration_ms.max(1) as f64 / 1000.0;
         let prev: std::collections::HashMap<String, (u64, u64)> = disks_t0
-            .iter()
-            .map(|d| (d.bsd_name.clone(), (d.read_bytes, d.write_bytes)))
+            .into_iter()
+            .map(|(name, rb, wb)| (name, (rb, wb)))
             .collect();
         s.disk_health = crate::ffi::iostat::disks()
             .into_iter()
@@ -490,12 +492,17 @@ impl Snapshot {
         }
     }
 
-    /// Write status.json atomically (temp file + rename) into the data dir.
+    /// Write status.json atomically (temp file + rename) into the data dir. The temp name
+    /// carries this process's pid so a concurrent writer (e.g. the guard and a one-shot
+    /// `eldr now`) can never clobber each other's temp and corrupt the rename.
     pub fn write_status(&self) -> std::io::Result<()> {
         let dir = config::ensure_data_dir();
         let final_path = config::status_path();
-        let tmp = dir.join("status.json.tmp");
-        std::fs::write(&tmp, self.to_json())?;
+        let tmp = dir.join(format!("status.json.{}.tmp", std::process::id()));
+        if let Err(e) = std::fs::write(&tmp, self.to_json()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
         std::fs::rename(&tmp, &final_path)
     }
 
