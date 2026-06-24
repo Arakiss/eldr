@@ -45,7 +45,7 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.8.0`). Every reading above is cross-checked against an
+> **Status:** early but real (`v0.9.0`). Every reading above is cross-checked against an
 > independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
@@ -231,7 +231,13 @@ ELDR_CHECKPOINT=0    # git stash-create dirty agent repos
 ELDR_SUSPEND=0       # SIGSTOP the top non-protected CPU hog (auto-SIGCONT)
 ELDR_CONFIRM=3       # consecutive critical samples before acting
 ELDR_DRYRUN=0        # 1 = log only, perform nothing
+
+ELDR_HOG_CPU=300     # resource-hog alert: % CPU (across cores) a process must sustain
+ELDR_HOG_RAM=0.15    # resource-hog alert: fraction of physical RAM a process must hold
 ```
+
+The TUI also takes `ELDR_COLS`/`ELDR_ROWS` to pin the panel size when a terminal or
+multiplexer misreports it (it auto-detects via the terminal otherwise).
 
 ## Storage health & integrity
 
@@ -248,7 +254,9 @@ exposes it (internal SSD and external Thunderbolt-NVMe alike):
 ```
 
 It reports the bus (PCI-Express / USB / SATA / Apple Fabric) and, for NVMe disks, the
-firmware's on-die temperature sensors. On an external SSD those extra sensors track the
+firmware's on-die temperature sensors. Live read/write throughput (bytes/s over the
+sample window) shows on the TUI Storage tab and in `status.json` (`read_rate`/`write_rate`
+per disk). On an external SSD those extra sensors track the
 controller/NAND heat that drives the *enclosure's* fan — the fan's own RPM isn't exposed
 to the host over USB/Thunderbolt, so this is the closest honest signal for it.
 
