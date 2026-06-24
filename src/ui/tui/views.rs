@@ -1,4 +1,4 @@
-//! The seven tab bodies. Each takes the panel width (and a column count for the
+//! The eight tab bodies. Each takes the panel width (and a column count for the
 //! multi-column tabs) plus the `line`/`blank` sinks from [`super::frame`], and fills the
 //! middle of the frame. Charts come from [`crate::ui::chart`]; text and colour from
 //! [`super::fmt`]. The Overview is a dashboard wall on a wide screen (tall charts filling
@@ -10,7 +10,7 @@ use super::frame::{BlankFn, LineFn};
 use super::{Hist, Ident};
 use crate::sensors::snapshot::{HOG_CPU_PCT, HOG_RAM_FRAC, Snapshot};
 use crate::ui::chart;
-use crate::ui::style::{Style, bar_c, sparkline};
+use crate::ui::style::{Style, bar_c, human_bytes, sparkline};
 
 // MARK: Banner HUD lane
 
@@ -965,6 +965,97 @@ pub(super) fn body_battery(
         }
         blank(f);
         for l in &right {
+            line(format!(" {l}"), f);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn body_network(
+    s: &Snapshot,
+    h: &Hist,
+    st: &Style,
+    w: usize,
+    ncols: usize,
+    rows: usize,
+    line: &LineFn,
+    blank: &BlankFn,
+    f: &mut String,
+) {
+    let d = st.dim;
+    let z = st.reset;
+    let net = s.net.as_ref();
+    let rx = net.map(|n| n.rx_rate).unwrap_or(0.0);
+    let tx = net.map(|n| n.tx_rate).unwrap_or(0.0);
+    let (rxb, txb) = net.map(|n| (n.rx_bytes, n.tx_bytes)).unwrap_or((0, 0));
+    let (_rmn, rmx) = min_max(&h.net_rx);
+    let (_tmn, tmx) = min_max(&h.net_tx);
+
+    line(
+        format!(
+            " {d}Network{z}   {fr}↓ {}{z} {d}down{z}    {fr}↑ {}{z} {d}up{z}    {d}· since boot  ↓{}  ↑{}{z}",
+            fmt_rate(rx),
+            fmt_rate(tx),
+            human_bytes(rxb),
+            human_bytes(txb),
+            fr = st.fire,
+        ),
+        f,
+    );
+    blank(f);
+
+    // Two tall charts that fill the height: download and upload. Side by side when wide,
+    // stacked when narrow.
+    let stacked = ncols < 2;
+    let reserved = 1 + 1 + 1 + if stacked { 4 } else { 1 }; // header+blank+stat(s)
+    let chart_h = tall_h(rows, reserved);
+    let chart = |title: &str, hero: String, stat: String, data: &[f64], hi: f64, cells: usize| {
+        let mut v = Vec::with_capacity(chart_h + 2);
+        v.push(format!(
+            "{d}{title}{z}  {b}{fr}{hero}{z}",
+            b = st.bold,
+            fr = st.fire
+        ));
+        for row in chart::braille_area(data, 0.0, hi, cells, chart_h, st.fire, st) {
+            v.push(row);
+        }
+        v.push(format!("{d}{stat}{z}"));
+        v
+    };
+    let dn = chart(
+        "DOWNLOAD",
+        format!("↓ {}", fmt_rate(rx)),
+        format!("now {} · peak {}", fmt_rate(rx), fmt_rate(rmx)),
+        &h.net_rx,
+        rmx.max(1.0),
+        if stacked {
+            w.saturating_sub(2)
+        } else {
+            (w.saturating_sub(3)) / 2
+        },
+    );
+    let up = chart(
+        "UPLOAD",
+        format!("↑ {}", fmt_rate(tx)),
+        format!("now {} · peak {}", fmt_rate(tx), fmt_rate(tmx)),
+        &h.net_tx,
+        tmx.max(1.0),
+        if stacked {
+            w.saturating_sub(2)
+        } else {
+            (w.saturating_sub(3)) / 2
+        },
+    );
+    if stacked {
+        for l in &dn {
+            line(format!(" {l}"), f);
+        }
+        blank(f);
+        for l in &up {
+            line(format!(" {l}"), f);
+        }
+    } else {
+        for l in chart::columns(&[dn, up], 2, st) {
             line(format!(" {l}"), f);
         }
     }

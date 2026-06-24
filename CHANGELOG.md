@@ -12,8 +12,13 @@ All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
   dictionary (~100 KB), so a long-running guard reached ~280 MB and a 24/7 TUI ~8.5 GB
   of footprint. Now released — footprint is flat over time (verified with `leaks`: was
   64 440 leaks / 4 MB in 30 s, now 0). This was the monitor quietly becoming the hog.
+- **Mounted disk images no longer show as volumes.** Read-only mounts under `/Volumes`
+  (an app's `.dmg`, e.g. the "Otty" terminal) were listed as storage; they're now filtered
+  out. The boot volume is kept even though it's a sealed read-only system volume.
 
 ### Added
+- **Network tab.** A dedicated view with tall download/upload braille charts (filling the
+  height like the rest of the dashboard), current rates, peaks, and totals since boot.
 - **Live disk I/O throughput.** Per-physical-disk read/write bytes/s, measured over the
   sample window like the network rates. Shown on the TUI Storage tab (per disk + total)
   and added to `status.json` (`read_rate`/`write_rate`).

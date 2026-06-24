@@ -118,6 +118,7 @@ pub(super) fn render_styled(
         3 => views::body_memory(s, &st, w, ncols, rows, &line, &blank, &mut f),
         4 => views::body_energy(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
         5 => views::body_battery(s, &st, w, ncols, rows, &line, &blank, &mut f),
+        6 => views::body_network(s, h, &st, w, ncols, rows, &line, &blank, &mut f),
         _ => views::body_storage(s, id, &st, w, ncols, rows, &line, &blank, &mut f),
     }
 
@@ -147,7 +148,7 @@ pub(super) fn render_styled(
         };
         line(
             format!(
-                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-7{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
+                " {d}q{z} Quit {d}·{z} {d}←→/Tab{z} Views {d}·{z} {d}1-8{z} Jump {d}·{z} {d}space{z} Pause {d}·{z} {d}+−{z} Speed {d}·{z} {d}?{z} Help{paused}"
             ),
             &mut f,
         );
