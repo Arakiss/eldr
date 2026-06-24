@@ -3,7 +3,13 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
-## [0.11.1] — unreleased
+## [0.11.2] — unreleased
+
+### Changed
+- **The TUI version is shown in the brand (fire) colour** in the header (`eldr vX.Y.Z`),
+  so it stands out and is unmistakable at a glance (was dim).
+
+## [0.11.1]
 
 ### Added
 - **TUI shows the eldr version** in the header (`eldr vX.Y.Z`), so it's easy to tell which
