@@ -3,7 +3,16 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
-## [0.11.2] — unreleased
+## [0.11.3] — unreleased
+
+### Fixed
+- **The header (with the version) no longer scrolls off the top.** The panel emitted a
+  trailing newline on the last row, which scrolled the whole frame up one line and pushed
+  the `eldr vX.Y.Z` header off-screen. The final newline is now dropped so the cursor stays
+  on the bottom row — no scroll, header always visible. Regression-tested (every tab emits
+  strictly fewer newlines than the terminal has rows).
+
+## [0.11.2]
 
 ### Changed
 - **The TUI version is shown in the brand (fire) colour** in the header (`eldr vX.Y.Z`),

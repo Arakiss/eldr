@@ -426,10 +426,12 @@ mod tests {
         for &(cols, rows) in &[(229u16, 29u16), (200, 32), (120, 40), (90, 24)] {
             for tab in 0..NTABS {
                 let out = render_sized(&s, &h, &ui(tab), &ident(), cols, rows);
+                // Strictly fewer newlines than rows: emitting a '\n' on the last row scrolls
+                // the panel and pushes the header (with the version) off the top.
                 let lines = out.matches('\n').count();
                 assert!(
-                    lines <= rows as usize,
-                    "tab {tab} at {cols}x{rows} emitted {lines} lines (> {rows})",
+                    lines < rows as usize,
+                    "tab {tab} at {cols}x{rows} emitted {lines} newlines (must be < {rows})",
                 );
             }
         }
