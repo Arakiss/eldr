@@ -166,6 +166,12 @@ pub(super) fn render_styled(
         );
     }
 
+    // Drop the final newline: writing a '\n' on the last terminal row scrolls the panel up
+    // by one, pushing the header (with the version) off the top. Leaving the last line
+    // without a trailing newline keeps the cursor on the bottom row — no scroll.
+    if f.ends_with('\n') {
+        f.pop();
+    }
     f.push_str(term::clear_eos());
     f
 }
