@@ -48,6 +48,10 @@ pub fn run(interval_secs: u64) -> i32 {
     config::ensure_data_dir();
     let pidfile = config::pid_path();
     let _ = std::fs::write(&pidfile, unsafe { getpid() }.to_string());
+    let _ = std::fs::set_permissions(
+        &pidfile,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    );
 
     let interval_ms = (interval_secs.max(1)) * 1000;
     let wd = Watchdog::load();
@@ -255,12 +259,15 @@ fn osa_escape(s: &str) -> String {
         .collect()
 }
 
-/// PID of a live guard, if any (reads the pid file and probes the process).
+/// PID of a live guard, if any (reads the pid file and probes the process). Beyond a
+/// `kill(pid, 0)` existence probe, confirm the process is actually an `eldr` — a bare PID
+/// can be recycled to an unrelated process, and trusting it would either suppress a
+/// restart or let `guard-stop` SIGTERM a stranger.
 pub fn running_pid() -> Option<i32> {
     let txt = std::fs::read_to_string(config::pid_path()).ok()?;
     let pid: i32 = txt.trim().parse().ok()?;
     // signal 0 probes existence without delivering a signal.
-    if unsafe { kill(pid, 0) } == 0 {
+    if unsafe { kill(pid, 0) } == 0 && crate::ffi::proc::name_of(pid).contains("eldr") {
         Some(pid)
     } else {
         None
@@ -644,7 +651,13 @@ fn push_history(hist: &mut Vec<(f64, u32, f32)>, s: &Snapshot) {
         .iter()
         .map(|(c, r, p)| format!("{c:.1},{r},{p:.1}\n"))
         .collect();
-    let _ = std::fs::write(config::history_path(), body);
+    // Write atomically (temp + rename in the same dir) so the TUI never reads a torn file
+    // mid-rewrite — the rename swaps in the whole new file at once.
+    let dir = config::data_dir();
+    let tmp = dir.join("history.csv.tmp");
+    if std::fs::write(&tmp, &body).is_ok() {
+        let _ = std::fs::rename(&tmp, config::history_path());
+    }
 }
 
 #[cfg(test)]

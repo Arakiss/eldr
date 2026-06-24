@@ -104,10 +104,14 @@ pub fn data_dir() -> std::path::PathBuf {
         .join("eldr")
 }
 
-/// Ensure the data directory exists; returns its path.
+/// Ensure the data directory exists; returns its path. The directory is owner-only
+/// (0700) so its contents (status.json, logs naming processes, the pid file, scrub
+/// manifests) aren't readable by other local users — least privilege for a daemon.
 pub fn ensure_data_dir() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
     let dir = data_dir();
     let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     dir
 }
 
