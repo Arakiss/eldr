@@ -457,14 +457,17 @@ pub(super) fn body_cpu(
     );
     blank(f);
 
-    // Tall load history, filling the height left over the per-core grid.
-    let core_rows = p.div_ceil(ncols.max(1)).max(1)
-        + if e > 0 {
-            e.div_ceil(ncols.max(1)).max(1) + 1
-        } else {
-            0
-        };
-    let chart_h = tall_h(rows, 1 + 1 + core_rows + 1);
+    // Tall load history, filling the height left over the per-core grid. Reserve every
+    // non-chart line: lane, blank, stat, blank, the Performance header + P grid, and the
+    // Efficiency header + E grid.
+    let pg = p.div_ceil(ncols.max(1)).max(1);
+    let eg = if e > 0 {
+        e.div_ceil(ncols.max(1)).max(1)
+    } else {
+        0
+    };
+    let reserved = 4 + 1 + pg + if e > 0 { 1 + eg } else { 0 };
+    let chart_h = tall_h(rows, reserved);
     let chartw = w.saturating_sub(2).max(8);
     let (mn, mx) = min_max(&h.cpu);
     for row in chart::braille_area(&h.cpu, 0.0, 100.0, chartw, chart_h, st.fire, st) {
@@ -803,9 +806,10 @@ pub(super) fn body_energy(
         f,
     );
     blank(f);
-    // Tall power history filling the height over the rails.
+    // Tall power history filling the height over the rails. Reserve every non-chart line:
+    // power header, blank, stat, blank, the "Where the watts go" title, and the rails.
     let rail_rows = 4usize.div_ceil(ncols.max(1));
-    let chart_h = tall_h(rows, 1 + 1 + 1 + 1 + rail_rows);
+    let chart_h = tall_h(rows, 1 + 1 + 1 + 1 + 1 + rail_rows);
     let chartw = w.saturating_sub(2).max(8);
     for row in chart::braille_area(&h.pwr, 0.0, mx.max(1.0), chartw, chart_h, st.fire, st) {
         line(format!(" {row}"), f);
@@ -1004,11 +1008,16 @@ pub(super) fn body_network(
     );
     blank(f);
 
-    // Two tall charts that fill the height: download and upload. Side by side when wide,
-    // stacked when narrow.
+    // Two tall charts that fill the height: download and upload. Side by side when wide
+    // (one chart's height); stacked when narrow, where both charts share the height — so
+    // halve it minus their own title/stat/blank lines.
     let stacked = ncols < 2;
-    let reserved = 1 + 1 + 1 + if stacked { 4 } else { 1 }; // header+blank+stat(s)
-    let chart_h = tall_h(rows, reserved);
+    let chart_h = if stacked {
+        (rows.saturating_sub(13)) / 2
+    } else {
+        tall_h(rows, 4)
+    }
+    .clamp(3, 28);
     let chart = |title: &str, hero: String, stat: String, data: &[f64], hi: f64, cells: usize| {
         let mut v = Vec::with_capacity(chart_h + 2);
         v.push(format!(

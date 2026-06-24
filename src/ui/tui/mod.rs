@@ -418,8 +418,26 @@ mod tests {
     }
 
     #[test]
+    fn no_tab_overflows_its_rows() {
+        // Every tab must fit within the terminal height — an over-tall body scrolls the
+        // header (the tab strip) off the panel. Check a wide/short screen and a laptop.
+        let s = snap();
+        let h = hist();
+        for &(cols, rows) in &[(229u16, 29u16), (200, 32), (120, 40), (90, 24)] {
+            for tab in 0..NTABS {
+                let out = render_sized(&s, &h, &ui(tab), &ident(), cols, rows);
+                let lines = out.matches('\n').count();
+                assert!(
+                    lines <= rows as usize,
+                    "tab {tab} at {cols}x{rows} emitted {lines} lines (> {rows})",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cooling_tab_shows_thermal_and_fans() {
-        let out = render(&snap(), &hist(), &ui(2), &ident());
+        let out = render_sized(&snap(), &hist(), &ui(2), &ident(), 120, 48);
         assert!(out.contains("Thermal"));
         assert!(out.contains("CPU temp"));
         assert!(out.contains("Fan history"));
@@ -428,7 +446,7 @@ mod tests {
 
     #[test]
     fn memory_tab_is_unmistakable() {
-        let out = render(&snap(), &hist(), &ui(3), &ident());
+        let out = render_sized(&snap(), &hist(), &ui(3), &ident(), 120, 48);
         assert!(out.contains("In use"));
         assert!(out.contains("available"));
         assert!(out.contains("Pressure"));
@@ -437,7 +455,7 @@ mod tests {
 
     #[test]
     fn memory_tab_explains_why() {
-        let out = render(&snap(), &hist(), &ui(3), &ident());
+        let out = render_sized(&snap(), &hist(), &ui(3), &ident(), 120, 48);
         // The pressure now carries a reason and names the biggest holder.
         assert!(out.contains("why →"));
         assert!(out.contains("reclaimable"));
