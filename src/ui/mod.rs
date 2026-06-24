@@ -4,6 +4,7 @@
 //! - [`term`]   owned termios raw mode + ANSI primitives.
 //! - [`tui`]    the live dashboard.
 
+pub mod chart;
 pub mod pretty;
 pub mod style;
 pub mod term;

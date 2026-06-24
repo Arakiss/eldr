@@ -23,10 +23,16 @@ Apple's own tools do, and — when armed — takes **reversible** action on a su
 thermal anomaly.
 
 <p align="center">
+  <img src="assets/eldr-tui-wide.svg" alt="eldr's dashboard-wall Overview on a wide terminal — four tall braille area charts for CPU, GPU, power and network filling the height, a band of compact panels (memory, heat, cores, top processes) below, and a red callout flagging a resource hog" width="100%" />
+</p>
+
+<p align="center"><sub><code>eldr tui</code> — the Overview as a dashboard wall: on a wide screen the charts grow to fill the whole panel (height and width), tuned for an ultra-wide always-on monitor; it degrades to compact single-row lanes on a laptop. Below it cycles through seven tabbed views:</sub></p>
+
+<p align="center">
   <img src="assets/eldr-demo.gif" alt="eldr's live TUI cycling through its tabs — Overview, CPU, Cooling, Memory, Energy, Battery — with colour-coded bars" width="100%" />
 </p>
 
-<p align="center"><sub><code>eldr tui</code> — seven tabbed live views. Below is <code>eldr now</code>, the one-shot snapshot:</sub></p>
+<p align="center"><sub>And <code>eldr now</code>, the one-shot snapshot:</sub></p>
 
 ```
   eldr  Apple M4 Pro (Mac16,11)  8P+4E · 16 GPU   OK (live)
@@ -39,7 +45,7 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.5.0`). Every reading above is cross-checked against an
+> **Status:** early but real (`v0.8.0`). Every reading above is cross-checked against an
 > independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
@@ -53,6 +59,10 @@ eldr's two differences:
   action on a sustained thermal anomaly — pause a runaway agent, `SIGSTOP` the top CPU hog
   (auto-resumed), `git stash create` a dirty repo. It never kills, never shuts down, never
   closes a session. A monitor that doubles as a safety net.
+- **It tells you what's slowing the Mac.** The guard passively notifies on a sustained
+  resource hog — a process pinning the CPU (≥ 300%, ~3 cores), one holding a large share of
+  RAM (≥ 15%), or memory under sustained pressure with swap climbing. The always-on TUI
+  flags the same offender in red on the Overview, so a glance tells you what to quit.
 - **Zero crates, by policy.** The whole binary is `std` plus FFI eldr writes itself —
   nothing under `[dependencies]`, one package in `Cargo.lock`. Small surface, fast builds,
   no supply chain to trust. CI re-checks the invariant on every push.
@@ -115,8 +125,8 @@ from — so it appears with the eldr icon under *System Settings → Login Items
 eldr now                     one-shot snapshot
 eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
 eldr status                  panel (live, or the last guard sample)
-eldr tui [--interval N]      tabbed live dashboard — Overview/CPU/Cooling/Memory/Energy/Battery/Storage
-                             (←→/Tab/1-7 switch views, space pause, +/- speed, ? help)
+eldr tui [--interval N]      responsive live dashboard — Overview/CPU/Cooling/Memory/Energy/Battery/Storage
+                             (a dashboard wall that fills the whole screen; ←→/Tab/1-7 switch, space pause, +/- speed, ? help)
 eldr watch [--interval N]    stream one line per sample (--json = NDJSON) — for agents
 eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
 eldr sensors                 every SMC sensor — temps, fans, power, current, voltage
@@ -204,6 +214,13 @@ sustained thermal anomaly. The safety model is the point:
 - Agents are only ever notified, never sent a prompt they would execute.
 - `ELDR_DRYRUN=1` logs intended actions and performs nothing; `eldr watchdog-test`
   previews targeting at any time.
+
+Separately — always on, no arming needed — the guard also **notifies** (never intervenes)
+on a degrading disk (see below) and on a sustained **resource hog**: a process pinning the
+CPU (≥ 300%, ~3 cores), one holding a large share of RAM (≥ 15% of physical memory), or
+memory under sustained pressure with swap climbing. Each fires once per episode (a macOS
+notification plus a line in `alerts.log`) and re-arms when it recovers, so a brief spike
+stays quiet but a stuck VM or a leak gets surfaced.
 
 Arming lives in `~/.config/eldr/config.toml` (flat `KEY=value`):
 
