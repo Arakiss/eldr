@@ -7,10 +7,10 @@
 //! changed while size AND modification time stayed identical. Zero crates — the SHA-256
 //! is ours.
 
-use crate::config;
 use crate::crypto::cc::CcSha256;
 use crate::crypto::sha256;
 use crate::sensors::snapshot::SCHEMA_VERSION;
+use crate::{config, daemon::notify};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Read;
@@ -203,27 +203,7 @@ fn notify_corruption(root: &str, corrupt: &[String]) {
         "{} file(s) corrupted under {root} — restore from backup",
         corrupt.len()
     );
-    // Escape for an AppleScript literal; collapse control chars (a corrupt path can't
-    // break out of the string and inject AppleScript).
-    let esc = |s: &str| -> String {
-        s.chars()
-            .map(|c| match c {
-                '\\' => "\\\\".to_string(),
-                '"' => "\\\"".to_string(),
-                c if (c as u32) < 0x20 => " ".to_string(),
-                c => c.to_string(),
-            })
-            .collect()
-    };
-    let script = format!(
-        "display notification \"{}\" with title \"eldr · data integrity\" sound name \"Basso\"",
-        esc(&body)
-    );
-    let _ = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    notify::send("Eldr: data integrity", &body);
 
     let ts = crate::sensors::host::timestamp();
     let mut line = format!("{ts} SCRUB {} corrupt under {root}\n", corrupt.len());

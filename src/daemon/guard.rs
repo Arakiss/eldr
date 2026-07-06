@@ -6,9 +6,8 @@
 //! It never kills, shuts down, or sends an agent a prompt.
 
 use crate::config;
-use crate::daemon::cmux;
-use crate::daemon::maint;
 use crate::daemon::watchdog::Watchdog;
+use crate::daemon::{cmux, maint, notify};
 use crate::sensors::snapshot::{
     DiskHealth, HOG_CPU_PCT, HOG_RAM_FRAC, Level, ProcInfo, Snapshot, Thermal,
 };
@@ -17,6 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const SAMPLE_MS: u64 = 500;
+const THERMAL_NOTICE_SUSTAIN: u32 = 3;
+const THERMAL_NOTICE_COOLDOWN_SECS: u64 = 30 * 60;
 static STOP: AtomicBool = AtomicBool::new(false);
 
 const SIGINT: c_int = 2;
@@ -65,7 +66,7 @@ pub fn run(interval_secs: u64) -> i32 {
         wd.dryrun,
     );
 
-    let mut last = Level::Ok;
+    let mut thermal_watch = ThermalWatch::default();
     let mut crit: u32 = 0; // consecutive sustained-critical samples
     let mut fired = false; // one intervention per critical episode
     let mut history: Vec<(f64, u32, f32)> = Vec::new();
@@ -116,7 +117,7 @@ pub fn run(interval_secs: u64) -> i32 {
         let _ = snap.write_status();
         push_history(&mut history, &snap);
 
-        handle_transitions(&snap, &mut last);
+        handle_transitions(&snap, &mut thermal_watch);
         watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted);
         watch_resource_hogs(&snap, &mut hogs);
         run_maintenance(&mut last_maint, &mut warned_big);
@@ -159,46 +160,102 @@ pub fn run(interval_secs: u64) -> i32 {
     0
 }
 
-/// React to a level transition: alert on entering a non-OK level, recover on return.
-fn handle_transitions(s: &Snapshot, last: &mut Level) {
-    if s.level != Level::Ok && s.level != *last {
-        // Entered (or escalated to) a non-OK level.
-        log_alert(s);
-        notify_os(
-            &format!("eldr {}", s.level.as_str()),
-            &format!(
-                "cpu {:.0}°C · fan {} · {}",
-                s.cpu_temp,
-                s.fan_rpm,
-                s.thermal.as_str()
-            ),
-        );
-        snapshot_processes(s);
-        let color = if s.level == Level::Alert {
-            "#f85149"
-        } else {
-            "#d29922"
-        };
-        cmux::badge_all(
-            s.level.as_str(),
-            &format!("{:.0}°C {}rpm", s.cpu_temp, s.fan_rpm),
-            color,
-        );
-        if s.level == Level::Alert {
-            cmux::notify_all(
-                "eldr · thermal anomaly",
-                &format!("thermal {}", s.thermal.as_str()),
-                &format!(
-                    "cpu {:.0}°C · fan {}rpm. Reversible actions only; don't power anything off.",
-                    s.cpu_temp, s.fan_rpm
-                ),
+/// React to thermal level changes. Fair thermal pressure is useful status, not a push
+/// notification; only sustained serious/critical pressure or a real fan fault interrupts.
+fn handle_transitions(s: &Snapshot, watch: &mut ThermalWatch) {
+    watch.update(s);
+}
+
+#[derive(Default)]
+struct ThermalWatch {
+    last: Level,
+    actionable_streak: u32,
+    notified_this_episode: bool,
+    last_notified_at: u64,
+}
+
+impl ThermalWatch {
+    fn update(&mut self, s: &Snapshot) {
+        if s.level != Level::Ok && s.level != self.last {
+            cmux::badge_all(
+                thermal_badge_label(s),
+                &format!("{:.0}°C {}rpm", s.cpu_temp, s.fan_rpm),
+                thermal_badge_color(s),
             );
+        } else if s.level == Level::Ok && self.last != Level::Ok {
+            cmux::clear_all();
         }
-    } else if s.level == Level::Ok && *last != Level::Ok {
-        // Recovered.
-        cmux::clear_all();
+
+        if thermal_requires_attention(s) {
+            self.actionable_streak = self.actionable_streak.saturating_add(1);
+        } else {
+            self.actionable_streak = 0;
+            if s.level == Level::Ok {
+                self.notified_this_episode = false;
+            }
+        }
+
+        if self.actionable_streak >= THERMAL_NOTICE_SUSTAIN && !self.notified_this_episode {
+            log_alert(s);
+            snapshot_processes(s);
+            let now = crate::sensors::host::unix_time();
+            if now.saturating_sub(self.last_notified_at) >= THERMAL_NOTICE_COOLDOWN_SECS {
+                let (title, body) = thermal_notice_copy(s);
+                notify::send_coalesced(Some("eldr.thermal"), title, &body);
+                cmux::notify_all("Eldr: cooling pressure", "thermal", &body);
+                self.last_notified_at = now;
+            }
+            self.notified_this_episode = true;
+        }
+
+        self.last = s.level;
     }
-    *last = s.level;
+}
+
+fn thermal_requires_attention(s: &Snapshot) -> bool {
+    s.fan_failed() || matches!(s.thermal, Thermal::Serious | Thermal::Critical)
+}
+
+fn thermal_badge_label(s: &Snapshot) -> &'static str {
+    if thermal_requires_attention(s) {
+        "HEAT"
+    } else {
+        "WARM"
+    }
+}
+
+fn thermal_badge_color(s: &Snapshot) -> &'static str {
+    if thermal_requires_attention(s) {
+        "#f85149"
+    } else {
+        "#d29922"
+    }
+}
+
+fn thermal_notice_copy(s: &Snapshot) -> (&'static str, String) {
+    let readings = format!("CPU {:.0}°C · fan {}rpm.", s.cpu_temp, s.fan_rpm);
+    if s.fan_failed() {
+        (
+            "Eldr: fan needs attention",
+            format!(
+                "macOS is asking for airflow, but a fan is not spinning. Save work and check vents. {readings}"
+            ),
+        )
+    } else if s.thermal == Thermal::Critical {
+        (
+            "Eldr: sustained cooling pressure",
+            format!(
+                "macOS reports critical thermal pressure for ~90s. Save work and improve airflow. {readings}"
+            ),
+        )
+    } else {
+        (
+            "Eldr: sustained cooling pressure",
+            format!(
+                "macOS reports serious thermal pressure for ~90s. Usually sustained load, not a temperature emergency. {readings}"
+            ),
+        )
+    }
 }
 
 fn log_alert(s: &Snapshot) {
@@ -239,34 +296,6 @@ fn append(path: &std::path::Path, text: &str) {
     {
         let _ = f.write_all(text.as_bytes());
     }
-}
-
-/// macOS system notification via osascript (a system tool, not a crate dep).
-fn notify_os(title: &str, body: &str) {
-    let script = format!(
-        "display notification \"{}\" with title \"{}\" sound name \"Basso\"",
-        osa_escape(body),
-        osa_escape(title)
-    );
-    let _ = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-}
-
-/// Escape a string for an AppleScript double-quoted literal. Besides backslash and quote,
-/// collapse newlines and other control characters to a space so a process or disk name
-/// can never break out of the literal (AppleScript ignores `\n` inside a literal anyway).
-fn osa_escape(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '\\' => "\\\\".to_string(),
-            '"' => "\\\"".to_string(),
-            c if (c as u32) < 0x20 => " ".to_string(),
-            c => c.to_string(),
-        })
-        .collect()
 }
 
 /// PID of a live guard, if any (reads the pid file and probes the process). Beyond a
@@ -346,7 +375,7 @@ fn watch_disk_health(
                 )
             };
             log_disk_alert(s, h, failing, nvme, cur);
-            notify_os(&title, &body);
+            notify::send(&title, &body);
             cmux::badge_all("DISK", &h.bsd_name, "#f85149");
         } else if !trigger {
             alerted.remove(&h.bsd_name);
@@ -546,7 +575,7 @@ fn proc_label(name: &str) -> String {
 fn watch_resource_hogs(s: &Snapshot, hogs: &mut HogWatch) {
     for a in hogs.check(s) {
         log_alert_line(&a.log);
-        notify_os(&a.title, &a.body);
+        notify::send(&a.title, &a.body);
     }
 }
 
@@ -574,7 +603,7 @@ fn watch_for_update(last: &mut u64, notified: &mut Option<String>) {
                 crate::sensors::host::timestamp()
             ),
         );
-        notify_os(
+        notify::send(
             "eldr · update available",
             &format!("v{v} is out — run `eldr update`"),
         );
@@ -602,7 +631,7 @@ fn run_maintenance(last_maint: &mut u64, warned_big: &mut bool) {
                     crate::sensors::host::timestamp()
                 ),
             );
-            notify_os(
+            notify::send(
                 "eldr · data dir large",
                 &format!("{human} under ~/.local/share/eldr — consider: eldr prune"),
             );
@@ -774,6 +803,33 @@ mod tests {
         for _ in 0..5 {
             assert!(w.check(&s).is_empty());
         }
+    }
+
+    #[test]
+    fn fair_thermal_pressure_is_status_not_an_actionable_notice() {
+        let mut s = Snapshot::default();
+        s.thermal = Thermal::Fair;
+        s.level = s.compute_level();
+        assert_eq!(s.level, Level::Warn);
+        assert!(!thermal_requires_attention(&s));
+        assert_eq!(thermal_badge_label(&s), "WARM");
+    }
+
+    #[test]
+    fn serious_thermal_pressure_gets_explanatory_notice_copy() {
+        let mut s = Snapshot::default();
+        s.thermal = Thermal::Serious;
+        s.cpu_temp = 75.0;
+        s.fan_rpm = 3150;
+        s.level = s.compute_level();
+
+        assert_eq!(s.level, Level::Alert);
+        assert!(thermal_requires_attention(&s));
+        let (title, body) = thermal_notice_copy(&s);
+        assert_eq!(title, "Eldr: sustained cooling pressure");
+        assert!(body.contains("serious thermal pressure"));
+        assert!(body.contains("not a temperature emergency"));
+        assert!(body.contains("CPU 75°C"));
     }
 
     #[test]

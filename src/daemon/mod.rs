@@ -10,5 +10,6 @@ pub mod cmux;
 pub mod guard;
 pub mod launchd;
 pub mod maint;
+pub mod notify;
 pub mod scrub;
 pub mod watchdog;

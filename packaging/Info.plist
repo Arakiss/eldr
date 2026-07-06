@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>eldr</string>
-  <key>CFBundleDisplayName</key><string>eldr</string>
+  <key>CFBundleName</key><string>Eldr</string>
+  <key>CFBundleDisplayName</key><string>Eldr</string>
   <key>CFBundleIdentifier</key><string>com.petruarakiss.eldr</string>
   <key>CFBundleExecutable</key><string>eldr</string>
   <key>CFBundleIconFile</key><string>eldr</string>
