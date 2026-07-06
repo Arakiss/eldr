@@ -26,7 +26,14 @@ pub fn installed() -> bool {
     plist_path().exists()
 }
 
-fn render_plist(exe: &str, interval: u32, dir: &str, log: &str, associate_bundle: bool) -> String {
+fn render_plist(
+    exe: &str,
+    interval: u32,
+    dir: &str,
+    log: &str,
+    associate_bundle: bool,
+    cmux_socket_path: &str,
+) -> String {
     let bundle = if associate_bundle {
         format!(
             r#"  <key>AssociatedBundleIdentifiers</key>
@@ -51,6 +58,7 @@ fn render_plist(exe: &str, interval: u32, dir: &str, log: &str, associate_bundle
   <dict>
     <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:{home}/.local/bin:/Applications/cmux.app/Contents/Resources/bin</string>
     <key>ELDR_DIR</key><string>{dir}</string>
+    <key>CMUX_SOCKET_PATH</key><string>{cmux_socket_path}</string>
     <key>LC_ALL</key><string>en_US.UTF-8</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -63,6 +71,21 @@ fn render_plist(exe: &str, interval: u32, dir: &str, log: &str, associate_bundle
 "#,
         home = config::home(),
     )
+}
+
+fn cmux_socket_path(uid: u32) -> String {
+    let last = std::path::PathBuf::from(config::home())
+        .join(".local")
+        .join("state")
+        .join("cmux")
+        .join("last-socket-path");
+    if let Ok(text) = std::fs::read_to_string(last) {
+        let path = text.trim();
+        if !path.is_empty() {
+            return path.to_string();
+        }
+    }
+    format!("{}/.local/state/cmux/cmux-{uid}.sock", config::home())
 }
 
 struct GuardCandidate {
@@ -121,6 +144,7 @@ pub fn install() -> i32 {
     }
     let uid = unsafe { getuid() };
     let domain = format!("gui/{uid}");
+    let cmux_socket = cmux_socket_path(uid);
 
     for (idx, candidate) in candidates.iter().enumerate() {
         stop_loaded(&domain, &plist);
@@ -132,6 +156,7 @@ pub fn install() -> i32 {
                 &dir.to_string_lossy(),
                 &log.to_string_lossy(),
                 candidate.associate_bundle,
+                &cmux_socket,
             ),
         ) {
             eprintln!("eldr: cannot write plist: {e}");
@@ -205,4 +230,22 @@ pub fn uninstall() -> i32 {
     let _ = std::fs::remove_file(&plist);
     println!("eldr guard LaunchAgent uninstalled");
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_plist;
+
+    #[test]
+    fn launch_agent_pins_cmux_socket_path() {
+        let plist = render_plist(
+            "/tmp/eldr",
+            30,
+            "/tmp/eldr-data",
+            "/tmp/eldr-data/guard.log",
+            false,
+            "/tmp/cmux.sock",
+        );
+        assert!(plist.contains("<key>CMUX_SOCKET_PATH</key><string>/tmp/cmux.sock</string>"));
+    }
 }
