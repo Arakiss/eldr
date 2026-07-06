@@ -5,6 +5,8 @@
 
 use std::process::{Command, Stdio};
 
+const RESOURCE_KEY: &str = "resources";
+
 /// True if the `cmux` binary is reachable.
 pub fn available() -> bool {
     Command::new("cmux")
@@ -99,6 +101,118 @@ pub fn clear_all() {
     }
 }
 
+/// Clear the resource badge everywhere.
+pub fn clear_resources_all() {
+    for ws in workspaces() {
+        clear_status(&ws, RESOURCE_KEY);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WorkspaceUsage {
+    workspace: String,
+    cpu_pct: f64,
+    mem_bytes: u64,
+    proc_count: u32,
+}
+
+/// Read cmux's own per-workspace resource accounting. This uses the already-aggregated
+/// `workspace` rows, so Eldr does not need to remap every process to a tab itself.
+fn workspace_usage() -> Vec<WorkspaceUsage> {
+    let Ok(out) = Command::new("cmux")
+        .args(["top", "--all", "--processes", "--format", "tsv"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_workspace_usage(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_workspace_usage(text: &str) -> Vec<WorkspaceUsage> {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 5 || cols[3] != "workspace" {
+            continue;
+        }
+        let Ok(cpu_pct) = cols[0].parse::<f64>() else {
+            continue;
+        };
+        let Ok(mem_bytes) = cols[1].parse::<u64>() else {
+            continue;
+        };
+        let Ok(proc_count) = cols[2].parse::<u32>() else {
+            continue;
+        };
+        let workspace = cols[4].trim();
+        if !workspace.starts_with("workspace:") {
+            continue;
+        }
+        rows.push(WorkspaceUsage {
+            workspace: workspace.to_string(),
+            cpu_pct,
+            mem_bytes,
+            proc_count,
+        });
+    }
+    rows
+}
+
+/// Set a compact CPU/RAM badge on each cmux workspace tab.
+pub fn sync_resource_badges() {
+    for usage in workspace_usage() {
+        set_status(
+            &usage.workspace,
+            RESOURCE_KEY,
+            &resource_text(&usage),
+            "speedometer",
+            resource_color(&usage),
+        );
+    }
+}
+
+fn resource_text(usage: &WorkspaceUsage) -> String {
+    format!(
+        "CPU {} · RAM {} · {}p",
+        fmt_cpu(usage.cpu_pct),
+        fmt_mem(usage.mem_bytes),
+        usage.proc_count
+    )
+}
+
+fn resource_color(usage: &WorkspaceUsage) -> &'static str {
+    if usage.cpu_pct >= 300.0 || usage.mem_bytes >= 8 * 1_073_741_824 {
+        "#f85149"
+    } else if usage.cpu_pct >= 100.0 || usage.mem_bytes >= 4 * 1_073_741_824 {
+        "#d29922"
+    } else {
+        "#7fa8c9"
+    }
+}
+
+fn fmt_cpu(cpu_pct: f64) -> String {
+    if cpu_pct >= 10.0 {
+        format!("{cpu_pct:.0}%")
+    } else if cpu_pct > 0.0 {
+        format!("{cpu_pct:.1}%")
+    } else {
+        "0%".into()
+    }
+}
+
+fn fmt_mem(bytes: u64) -> String {
+    const GIB: f64 = 1_073_741_824.0;
+    const MIB: f64 = 1_048_576.0;
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.1}G", b / GIB)
+    } else if b >= MIB {
+        format!("{:.0}M", b / MIB)
+    } else {
+        format!("{}K", bytes / 1024)
+    }
+}
+
 /// Notify every workspace of an alert (passive).
 pub fn notify_all(title: &str, subtitle: &str, body: &str) {
     for ws in workspaces() {
@@ -137,4 +251,58 @@ pub fn send_key(surface: &str, key: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_workspace_resource_rows_from_cmux_top() {
+        let text = "\
+87.0\t4607160008\t80\ttotal\ttotal\t\t\n\
+2.0\t316904248\t7\tworkspace\tworkspace:7\twindow:1\tProject A\n\
+5.9\t597943536\t12\tpane\tpane:25\tworkspace:14\t\n\
+8.7\t285743392\t9\tworkspace\tworkspace:14\twindow:1\tProject B\n";
+
+        let rows = parse_workspace_usage(text);
+        assert_eq!(
+            rows,
+            vec![
+                WorkspaceUsage {
+                    workspace: "workspace:7".into(),
+                    cpu_pct: 2.0,
+                    mem_bytes: 316_904_248,
+                    proc_count: 7,
+                },
+                WorkspaceUsage {
+                    workspace: "workspace:14".into(),
+                    cpu_pct: 8.7,
+                    mem_bytes: 285_743_392,
+                    proc_count: 9,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn resource_badge_is_compact_and_colored_by_pressure() {
+        let calm = WorkspaceUsage {
+            workspace: "workspace:1".into(),
+            cpu_pct: 8.7,
+            mem_bytes: 285_743_392,
+            proc_count: 9,
+        };
+        assert_eq!(resource_text(&calm), "CPU 8.7% · RAM 273M · 9p");
+        assert_eq!(resource_color(&calm), "#7fa8c9");
+
+        let busy = WorkspaceUsage {
+            workspace: "workspace:2".into(),
+            cpu_pct: 350.0,
+            mem_bytes: 9 * 1_073_741_824,
+            proc_count: 2,
+        };
+        assert_eq!(resource_text(&busy), "CPU 350% · RAM 9.0G · 2p");
+        assert_eq!(resource_color(&busy), "#f85149");
+    }
 }

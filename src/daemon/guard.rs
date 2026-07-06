@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const SAMPLE_MS: u64 = 500;
 const THERMAL_NOTICE_SUSTAIN: u32 = 3;
 const THERMAL_NOTICE_COOLDOWN_SECS: u64 = 30 * 60;
+const CMUX_RESOURCE_MIN_SECS: u64 = 10;
 static STOP: AtomicBool = AtomicBool::new(false);
 
 const SIGINT: c_int = 2;
@@ -81,6 +82,7 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut warned_big = false;
     let mut last_smart: u64 = 0; // 0 ⇒ read SMART once at startup, then hourly
     let mut smart_cache: HashMap<String, String> = HashMap::new();
+    let mut last_cmux_resources: u64 = 0;
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
@@ -117,9 +119,10 @@ pub fn run(interval_secs: u64) -> i32 {
         let _ = snap.write_status();
         push_history(&mut history, &snap);
 
-        handle_transitions(&snap, &mut thermal_watch);
-        watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted);
+        handle_transitions(&snap, &mut thermal_watch, wd.cmux);
+        watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted, wd.cmux);
         watch_resource_hogs(&snap, &mut hogs);
+        watch_cmux_resources(wd.cmux, &mut last_cmux_resources);
         run_maintenance(&mut last_maint, &mut warned_big);
         if update_check {
             watch_for_update(&mut last_update, &mut update_notified);
@@ -154,7 +157,10 @@ pub fn run(interval_secs: u64) -> i32 {
     wd.unintervene();
 
     // Clean shutdown: clear badges, remove pid file.
-    cmux::clear_all();
+    if wd.cmux {
+        cmux::clear_all();
+        cmux::clear_resources_all();
+    }
     let _ = std::fs::remove_file(&pidfile);
     eprintln!("eldr guard: stopped");
     0
@@ -162,8 +168,8 @@ pub fn run(interval_secs: u64) -> i32 {
 
 /// React to thermal level changes. Fair thermal pressure is useful status, not a push
 /// notification; only sustained serious/critical pressure or a real fan fault interrupts.
-fn handle_transitions(s: &Snapshot, watch: &mut ThermalWatch) {
-    watch.update(s);
+fn handle_transitions(s: &Snapshot, watch: &mut ThermalWatch, cmux_enabled: bool) {
+    watch.update(s, cmux_enabled);
 }
 
 #[derive(Default)]
@@ -175,14 +181,14 @@ struct ThermalWatch {
 }
 
 impl ThermalWatch {
-    fn update(&mut self, s: &Snapshot) {
-        if s.level != Level::Ok && s.level != self.last {
+    fn update(&mut self, s: &Snapshot, cmux_enabled: bool) {
+        if cmux_enabled && s.level != Level::Ok && s.level != self.last {
             cmux::badge_all(
                 thermal_badge_label(s),
                 &format!("{:.0}°C {}rpm", s.cpu_temp, s.fan_rpm),
                 thermal_badge_color(s),
             );
-        } else if s.level == Level::Ok && self.last != Level::Ok {
+        } else if cmux_enabled && s.level == Level::Ok && self.last != Level::Ok {
             cmux::clear_all();
         }
 
@@ -202,7 +208,9 @@ impl ThermalWatch {
             if now.saturating_sub(self.last_notified_at) >= THERMAL_NOTICE_COOLDOWN_SECS {
                 let (title, body) = thermal_notice_copy(s);
                 notify::send_coalesced(Some("eldr.thermal"), title, &body);
-                cmux::notify_all("Eldr: cooling pressure", "thermal", &body);
+                if cmux_enabled {
+                    cmux::notify_all("Eldr: cooling pressure", "thermal", &body);
+                }
                 self.last_notified_at = now;
             }
             self.notified_this_episode = true;
@@ -210,6 +218,18 @@ impl ThermalWatch {
 
         self.last = s.level;
     }
+}
+
+fn watch_cmux_resources(cmux_enabled: bool, last: &mut u64) {
+    if !cmux_enabled {
+        return;
+    }
+    let now = crate::sensors::host::unix_time();
+    if now.saturating_sub(*last) < CMUX_RESOURCE_MIN_SECS {
+        return;
+    }
+    *last = now;
+    cmux::sync_resource_badges();
 }
 
 fn thermal_requires_attention(s: &Snapshot) -> bool {
@@ -340,6 +360,7 @@ fn watch_disk_health(
     s: &Snapshot,
     prev: &mut HashMap<String, (u64, u64)>,
     alerted: &mut HashSet<String>,
+    cmux_enabled: bool,
 ) {
     for h in &s.disk_health {
         if h.bsd_name.is_empty() {
@@ -376,7 +397,9 @@ fn watch_disk_health(
             };
             log_disk_alert(s, h, failing, nvme, cur);
             notify::send(&title, &body);
-            cmux::badge_all("DISK", &h.bsd_name, "#f85149");
+            if cmux_enabled {
+                cmux::badge_all("DISK", &h.bsd_name, "#f85149");
+            }
         } else if !trigger {
             alerted.remove(&h.bsd_name);
         }

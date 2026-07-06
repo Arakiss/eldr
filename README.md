@@ -63,6 +63,9 @@ eldr's two differences:
   resource hog — a process pinning the CPU (≥ 300%, ~3 cores), one holding a large share of
   RAM (≥ 15%), or memory under sustained pressure with swap climbing. The always-on TUI
   flags the same offender in red on the Overview, so a glance tells you what to quit.
+- **It annotates your cmux tabs.** When `ELDR_CMUX=1`, the guard writes a compact
+  per-workspace resource badge (`CPU … · RAM … · …p`) into cmux using cmux's own process
+  accounting, so you can see which workspace is carrying the load before switching to it.
 - **Zero crates, by policy.** The whole binary is `std` plus FFI eldr writes itself —
   nothing under `[dependencies]`, one package in `Cargo.lock`. Small surface, fast builds,
   no supply chain to trust. CI re-checks the invariant on every push.
@@ -224,10 +227,15 @@ memory under sustained pressure with swap climbing. Each fires once per episode 
 notification plus a line in `alerts.log`) and re-arms when it recovers, so a brief spike
 stays quiet but a stuck VM or a leak gets surfaced.
 
+If cmux is available and `ELDR_CMUX=1`, the guard also refreshes a passive `resources`
+status badge on every cmux workspace tab. The badge is fed by `cmux top --all --processes
+--format tsv`, not by a separate process scan, and shows aggregate CPU, RAM and process
+count for that workspace.
+
 Arming lives in `~/.config/eldr/config.toml` (flat `KEY=value`):
 
 ```
-ELDR_CMUX=1          # passive badge + notification into cmux workspaces
+ELDR_CMUX=1          # passive thermal/resource badges + notifications into cmux workspaces
 ELDR_INTERRUPT=0     # Escape to agent surfaces
 ELDR_CHECKPOINT=0    # git stash-create dirty agent repos
 ELDR_SUSPEND=0       # SIGSTOP the top non-protected CPU hog (auto-SIGCONT)
