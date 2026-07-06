@@ -255,10 +255,10 @@ fn command_error(cmd: &str, args: &[&str], out: &std::process::Output) -> String
 
 fn resource_text(usage: &WorkspaceUsage) -> String {
     format!(
-        "CPU {} · RAM {} · {}p",
+        "CPU {} · RAM {} · {}",
         fmt_cpu(usage.cpu_pct),
         fmt_mem(usage.mem_bytes),
-        usage.proc_count
+        fmt_proc_count(usage.proc_count)
     )
 }
 
@@ -287,12 +287,16 @@ fn fmt_mem(bytes: u64) -> String {
     const MIB: f64 = 1_048_576.0;
     let b = bytes as f64;
     if b >= GIB {
-        format!("{:.1}G", b / GIB)
+        format!("{:.1} GB", b / GIB)
     } else if b >= MIB {
-        format!("{:.0}M", b / MIB)
+        format!("{:.0} MB", b / MIB)
     } else {
-        format!("{}K", bytes / 1024)
+        format!("{} KB", bytes / 1024)
     }
+}
+
+fn fmt_proc_count(proc_count: u32) -> String {
+    format!("{proc_count} proc")
 }
 
 /// Notify every workspace of an alert (passive).
@@ -375,7 +379,7 @@ mod tests {
             mem_bytes: 285_743_392,
             proc_count: 9,
         };
-        assert_eq!(resource_text(&calm), "CPU 8.7% · RAM 273M · 9p");
+        assert_eq!(resource_text(&calm), "CPU 8.7% · RAM 273 MB · 9 proc");
         assert_eq!(resource_color(&calm), "#7fa8c9");
 
         let busy = WorkspaceUsage {
@@ -384,7 +388,7 @@ mod tests {
             mem_bytes: 9 * 1_073_741_824,
             proc_count: 2,
         };
-        assert_eq!(resource_text(&busy), "CPU 350% · RAM 9.0G · 2p");
+        assert_eq!(resource_text(&busy), "CPU 350% · RAM 9.0 GB · 2 proc");
         assert_eq!(resource_color(&busy), "#f85149");
     }
 }

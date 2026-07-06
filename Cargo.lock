@@ -4,4 +4,4 @@ version = 4
 
 [[package]]
 name = "eldr"
-version = "0.11.4"
+version = "0.11.5"

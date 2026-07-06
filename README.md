@@ -64,8 +64,9 @@ eldr's two differences:
   RAM (≥ 15%), or memory under sustained pressure with swap climbing. The always-on TUI
   flags the same offender in red on the Overview, so a glance tells you what to quit.
 - **It annotates your cmux tabs.** When `ELDR_CMUX=1`, the guard writes a compact
-  per-workspace resource badge (`CPU … · RAM … · …p`) into cmux using cmux's own process
-  accounting, so you can see which workspace is carrying the load before switching to it.
+  per-workspace resource badge (`CPU 8% · RAM 273 MB · 9 proc`) into cmux using cmux's
+  own process accounting, so you can see which workspace is carrying the load before
+  switching to it.
   If the guard runs from launchd, cmux must allow local automation
   (`automation.socketControlMode = "automation"`); the default `cmuxOnly` mode only trusts
   processes launched from inside cmux tabs.
@@ -233,7 +234,8 @@ stays quiet but a stuck VM or a leak gets surfaced.
 If cmux is available and `ELDR_CMUX=1`, the guard also refreshes a passive `resources`
 status badge on every cmux workspace tab. The badge is fed by `cmux top --all --processes
 --format tsv`, not by a separate process scan, and shows aggregate CPU, RAM and process
-count for that workspace. For a 24/7 launchd guard, set cmux's Automation socket mode to
+count for that workspace with human-readable units (`CPU 8% · RAM 273 MB · 9 proc`). For
+a 24/7 launchd guard, set cmux's Automation socket mode to
 `automation` in `~/.config/cmux/cmux.json` (or Settings → Automation); otherwise cmux's
 default `cmuxOnly` mode rejects commands from processes that were not launched inside a
 cmux tab, and Eldr logs the skipped badge refresh in `guard.log`.
