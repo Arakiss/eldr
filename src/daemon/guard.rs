@@ -180,18 +180,28 @@ struct ThermalWatch {
     actionable_streak: u32,
     notified_this_episode: bool,
     last_notified_at: u64,
+    cmux_badge_visible: bool,
+    cmux_seen_once: bool,
 }
 
 impl ThermalWatch {
     fn update(&mut self, s: &Snapshot, cmux_enabled: bool) {
-        if cmux_enabled && s.level != Level::Ok && s.level != self.last {
-            cmux::badge_all(
-                thermal_badge_label(s),
-                &format!("{:.0}°C {}rpm", s.cpu_temp, s.fan_rpm),
-                thermal_badge_color(s),
-            );
-        } else if cmux_enabled && s.level == Level::Ok && self.last != Level::Ok {
-            cmux::clear_all();
+        if cmux_enabled {
+            let show_badge = thermal_badge_should_show(s);
+            if show_badge {
+                if !self.cmux_badge_visible || s.level != self.last {
+                    cmux::badge_all(
+                        thermal_badge_label(s),
+                        &format!("{:.0}°C {}rpm", s.cpu_temp, s.fan_rpm),
+                        thermal_badge_color(s),
+                    );
+                }
+                self.cmux_badge_visible = true;
+            } else if self.cmux_badge_visible || !self.cmux_seen_once {
+                cmux::clear_all();
+                self.cmux_badge_visible = false;
+            }
+            self.cmux_seen_once = true;
         }
 
         if thermal_requires_attention(s) {
@@ -257,6 +267,10 @@ fn watch_cmux_resources(cmux_enabled: bool, state: &mut CmuxResourceWatch) {
 
 fn thermal_requires_attention(s: &Snapshot) -> bool {
     s.fan_failed() || matches!(s.thermal, Thermal::Serious | Thermal::Critical)
+}
+
+fn thermal_badge_should_show(s: &Snapshot) -> bool {
+    thermal_requires_attention(s)
 }
 
 fn thermal_badge_label(s: &Snapshot) -> &'static str {
@@ -858,6 +872,7 @@ mod tests {
         s.level = s.compute_level();
         assert_eq!(s.level, Level::Warn);
         assert!(!thermal_requires_attention(&s));
+        assert!(!thermal_badge_should_show(&s));
         assert_eq!(thermal_badge_label(&s), "WARM");
     }
 
@@ -871,6 +886,7 @@ mod tests {
 
         assert_eq!(s.level, Level::Alert);
         assert!(thermal_requires_attention(&s));
+        assert!(thermal_badge_should_show(&s));
         let (title, body) = thermal_notice_copy(&s);
         assert_eq!(title, "Eldr: sustained cooling pressure");
         assert!(body.contains("serious thermal pressure"));

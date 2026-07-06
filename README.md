@@ -66,7 +66,8 @@ eldr's two differences:
 - **It annotates your cmux tabs.** When `ELDR_CMUX=1`, the guard writes a compact
   per-workspace resource badge (`CPU 8% · RAM 273 MB · 9 proc`) into cmux using cmux's
   own process accounting, so you can see which workspace is carrying the load before
-  switching to it.
+  switching to it. Thermal and disk badges are reserved for alert states; routine
+  temperature and fan RPM stay in the dashboard instead of being repeated on every tab.
   If the guard runs from launchd, cmux must allow local automation
   (`automation.socketControlMode = "automation"`); the default `cmuxOnly` mode only trusts
   processes launched from inside cmux tabs.
@@ -234,8 +235,11 @@ stays quiet but a stuck VM or a leak gets surfaced.
 If cmux is available and `ELDR_CMUX=1`, the guard also refreshes a passive `resources`
 status badge on every cmux workspace tab. The badge is fed by `cmux top --all --processes
 --format tsv`, not by a separate process scan, and shows aggregate CPU, RAM and process
-count for that workspace with human-readable units (`CPU 8% · RAM 273 MB · 9 proc`). For
-a 24/7 launchd guard, set cmux's Automation socket mode to
+count for that workspace with human-readable units (`CPU 8% · RAM 273 MB · 9 proc`).
+Because temperature and fan speed are machine-level readings, Eldr only repeats a thermal
+badge across tabs when the Mac needs attention (serious/critical pressure or a fan fault);
+normal warmth belongs in `eldr tui`, not in every tab. For a 24/7 launchd guard, set cmux's
+Automation socket mode to
 `automation` in `~/.config/cmux/cmux.json` (or Settings → Automation); otherwise cmux's
 default `cmuxOnly` mode rejects commands from processes that were not launched inside a
 cmux tab, and Eldr logs the skipped badge refresh in `guard.log`.
@@ -243,7 +247,7 @@ cmux tab, and Eldr logs the skipped badge refresh in `guard.log`.
 Arming lives in `~/.config/eldr/config.toml` (flat `KEY=value`):
 
 ```
-ELDR_CMUX=1          # passive thermal/resource badges + notifications into cmux workspaces
+ELDR_CMUX=1          # per-workspace resources; thermal/disk badges only on alerts
 ELDR_INTERRUPT=0     # Escape to agent surfaces
 ELDR_CHECKPOINT=0    # git stash-create dirty agent repos
 ELDR_SUSPEND=0       # SIGSTOP the top non-protected CPU hog (auto-SIGCONT)
