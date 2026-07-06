@@ -19,6 +19,7 @@ const SAMPLE_MS: u64 = 500;
 const THERMAL_NOTICE_SUSTAIN: u32 = 3;
 const THERMAL_NOTICE_COOLDOWN_SECS: u64 = 30 * 60;
 const CMUX_RESOURCE_MIN_SECS: u64 = 10;
+const CMUX_PROBLEM_LOG_SECS: u64 = 10 * 60;
 static STOP: AtomicBool = AtomicBool::new(false);
 
 const SIGINT: c_int = 2;
@@ -58,8 +59,9 @@ pub fn run(interval_secs: u64) -> i32 {
     let interval_ms = (interval_secs.max(1)) * 1000;
     let wd = Watchdog::load();
     eprintln!(
-        "eldr guard: every {interval_secs}s -> {}  (watchdog: confirm={} interrupt={} checkpoint={} suspend={} dryrun={})",
+        "eldr guard: every {interval_secs}s -> {}  (watchdog: cmux={} confirm={} interrupt={} checkpoint={} suspend={} dryrun={})",
         config::status_path().display(),
+        wd.cmux,
         wd.confirm,
         wd.interrupt,
         wd.checkpoint,
@@ -82,7 +84,7 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut warned_big = false;
     let mut last_smart: u64 = 0; // 0 ⇒ read SMART once at startup, then hourly
     let mut smart_cache: HashMap<String, String> = HashMap::new();
-    let mut last_cmux_resources: u64 = 0;
+    let mut cmux_resources = CmuxResourceWatch::default();
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
@@ -122,7 +124,7 @@ pub fn run(interval_secs: u64) -> i32 {
         handle_transitions(&snap, &mut thermal_watch, wd.cmux);
         watch_disk_health(&snap, &mut disk_prev, &mut disk_alerted, wd.cmux);
         watch_resource_hogs(&snap, &mut hogs);
-        watch_cmux_resources(wd.cmux, &mut last_cmux_resources);
+        watch_cmux_resources(wd.cmux, &mut cmux_resources);
         run_maintenance(&mut last_maint, &mut warned_big);
         if update_check {
             watch_for_update(&mut last_update, &mut update_notified);
@@ -220,16 +222,37 @@ impl ThermalWatch {
     }
 }
 
-fn watch_cmux_resources(cmux_enabled: bool, last: &mut u64) {
+#[derive(Default)]
+struct CmuxResourceWatch {
+    last_sync: u64,
+    last_problem_log: u64,
+    last_problem: Option<String>,
+}
+
+fn watch_cmux_resources(cmux_enabled: bool, state: &mut CmuxResourceWatch) {
     if !cmux_enabled {
         return;
     }
     let now = crate::sensors::host::unix_time();
-    if now.saturating_sub(*last) < CMUX_RESOURCE_MIN_SECS {
+    if now.saturating_sub(state.last_sync) < CMUX_RESOURCE_MIN_SECS {
         return;
     }
-    *last = now;
-    cmux::sync_resource_badges();
+    state.last_sync = now;
+    let report = cmux::sync_resource_badges();
+    if report.is_problem() {
+        let summary = report.summary();
+        let changed = state.last_problem.as_deref() != Some(summary.as_str());
+        if changed || now.saturating_sub(state.last_problem_log) >= CMUX_PROBLEM_LOG_SECS {
+            eprintln!("eldr guard: cmux resource badges not refreshed ({summary})");
+            state.last_problem = Some(summary);
+            state.last_problem_log = now;
+        }
+    } else if state.last_problem.take().is_some() {
+        eprintln!(
+            "eldr guard: cmux resource badges recovered ({})",
+            report.summary()
+        );
+    }
 }
 
 fn thermal_requires_attention(s: &Snapshot) -> bool {

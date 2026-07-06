@@ -6,6 +6,7 @@
 use std::process::{Command, Stdio};
 
 const RESOURCE_KEY: &str = "resources";
+const MAX_ERR_CHARS: usize = 240;
 
 /// True if the `cmux` binary is reachable.
 pub fn available() -> bool {
@@ -36,16 +37,32 @@ pub fn workspaces() -> Vec<String> {
     ids
 }
 
-fn run(args: &[&str]) {
-    let _ = Command::new("cmux")
+fn run(args: &[&str]) -> Result<(), String> {
+    let out = Command::new("cmux")
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("spawn cmux: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(command_error("cmux", args, &out))
+    }
 }
 
 /// Set the thermal status badge in a workspace.
-pub fn set_status(workspace: &str, key: &str, text: &str, icon: &str, color: &str) {
+pub fn set_status(workspace: &str, key: &str, text: &str, icon: &str, color: &str) -> bool {
+    set_status_result(workspace, key, text, icon, color).is_ok()
+}
+
+fn set_status_result(
+    workspace: &str,
+    key: &str,
+    text: &str,
+    icon: &str,
+    color: &str,
+) -> Result<(), String> {
     run(&[
         "set-status",
         key,
@@ -56,16 +73,16 @@ pub fn set_status(workspace: &str, key: &str, text: &str, icon: &str, color: &st
         icon,
         "--color",
         color,
-    ]);
+    ])
 }
 
 /// Clear the thermal status badge in a workspace.
-pub fn clear_status(workspace: &str, key: &str) {
-    run(&["clear-status", key, "--workspace", workspace]);
+pub fn clear_status(workspace: &str, key: &str) -> bool {
+    run(&["clear-status", key, "--workspace", workspace]).is_ok()
 }
 
 /// Post a notification into a workspace.
-pub fn notify(workspace: &str, title: &str, subtitle: &str, body: &str) {
+pub fn notify(workspace: &str, title: &str, subtitle: &str, body: &str) -> bool {
     run(&[
         "notify",
         "--title",
@@ -76,7 +93,8 @@ pub fn notify(workspace: &str, title: &str, subtitle: &str, body: &str) {
         body,
         "--workspace",
         workspace,
-    ]);
+    ])
+    .is_ok()
 }
 
 /// Badge every workspace with the current thermal level (passive). One `list-workspaces`
@@ -118,14 +136,19 @@ struct WorkspaceUsage {
 
 /// Read cmux's own per-workspace resource accounting. This uses the already-aggregated
 /// `workspace` rows, so Eldr does not need to remap every process to a tab itself.
-fn workspace_usage() -> Vec<WorkspaceUsage> {
-    let Ok(out) = Command::new("cmux")
+fn workspace_usage() -> Result<Vec<WorkspaceUsage>, String> {
+    let out = Command::new("cmux")
         .args(["top", "--all", "--processes", "--format", "tsv"])
         .output()
-    else {
-        return Vec::new();
-    };
-    parse_workspace_usage(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| format!("spawn cmux top: {e}"))?;
+    if !out.status.success() {
+        return Err(command_error(
+            "cmux",
+            &["top", "--all", "--processes", "--format", "tsv"],
+            &out,
+        ));
+    }
+    Ok(parse_workspace_usage(&String::from_utf8_lossy(&out.stdout)))
 }
 
 fn parse_workspace_usage(text: &str) -> Vec<WorkspaceUsage> {
@@ -158,16 +181,75 @@ fn parse_workspace_usage(text: &str) -> Vec<WorkspaceUsage> {
     rows
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResourceSyncReport {
+    pub rows: usize,
+    pub set: usize,
+    pub error: Option<String>,
+}
+
+impl ResourceSyncReport {
+    pub fn is_problem(&self) -> bool {
+        self.error.is_some() || (self.rows == 0 && self.set == 0)
+    }
+
+    pub fn summary(&self) -> String {
+        match &self.error {
+            Some(err) => format!("rows={} set={} error={err}", self.rows, self.set),
+            None => format!("rows={} set={}", self.rows, self.set),
+        }
+    }
+}
+
 /// Set a compact CPU/RAM badge on each cmux workspace tab.
-pub fn sync_resource_badges() {
-    for usage in workspace_usage() {
-        set_status(
+pub fn sync_resource_badges() -> ResourceSyncReport {
+    let usages = match workspace_usage() {
+        Ok(usages) => usages,
+        Err(err) => {
+            return ResourceSyncReport {
+                rows: 0,
+                set: 0,
+                error: Some(err),
+            };
+        }
+    };
+    let mut report = ResourceSyncReport {
+        rows: usages.len(),
+        set: 0,
+        error: None,
+    };
+    for usage in usages {
+        match set_status_result(
             &usage.workspace,
             RESOURCE_KEY,
             &resource_text(&usage),
             "speedometer",
             resource_color(&usage),
-        );
+        ) {
+            Ok(()) => report.set += 1,
+            Err(err) => {
+                if report.error.is_none() {
+                    report.error = Some(err);
+                }
+            }
+        }
+    }
+    report
+}
+
+fn command_error(cmd: &str, args: &[&str], out: &std::process::Output) -> String {
+    let mut detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if detail.is_empty() {
+        detail = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    }
+    if detail.chars().count() > MAX_ERR_CHARS {
+        detail = detail.chars().take(MAX_ERR_CHARS).collect();
+        detail.push('…');
+    }
+    if detail.is_empty() {
+        format!("{cmd} {} exited {}", args.join(" "), out.status)
+    } else {
+        format!("{cmd} {} exited {}: {detail}", args.join(" "), out.status)
     }
 }
 

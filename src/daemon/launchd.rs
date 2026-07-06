@@ -4,8 +4,11 @@
 use crate::config;
 use crate::daemon::guard;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 const LABEL: &str = "com.petruarakiss.eldr.guard";
+const BUNDLE_ID: &str = "com.petruarakiss.eldr";
 
 unsafe extern "C" {
     fn getuid() -> u32;
@@ -23,13 +26,23 @@ pub fn installed() -> bool {
     plist_path().exists()
 }
 
-fn render_plist(exe: &str, interval: u32, dir: &str, log: &str) -> String {
+fn render_plist(exe: &str, interval: u32, dir: &str, log: &str, associate_bundle: bool) -> String {
+    let bundle = if associate_bundle {
+        format!(
+            r#"  <key>AssociatedBundleIdentifiers</key>
+  <array><string>{BUNDLE_ID}</string></array>
+"#
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>{LABEL}</string>
+{bundle}  <key>Program</key><string>{exe}</string>
   <key>ProgramArguments</key>
   <array>
     <string>{exe}</string><string>guard</string><string>--interval</string><string>{interval}</string>
@@ -52,85 +65,144 @@ fn render_plist(exe: &str, interval: u32, dir: &str, log: &str) -> String {
     )
 }
 
+struct GuardCandidate {
+    exe: String,
+    via_bundle: bool,
+    associate_bundle: bool,
+}
+
 /// The executable launchd should run. Prefer the app-bundle binary so the guard is
-/// attributed to `Eldr.app` in Login Items (its icon + name); fall back to our own path.
-fn guard_exe() -> Option<String> {
+/// attributed to `Eldr.app`; fall back to the installed CLI if macOS rejects the bundle
+/// executable after a local rebuild.
+fn guard_candidates() -> Vec<GuardCandidate> {
+    let mut out = Vec::new();
     let app =
         std::path::PathBuf::from(config::home()).join("Applications/Eldr.app/Contents/MacOS/eldr");
     if app.exists() {
-        return Some(app.to_string_lossy().into_owned());
+        out.push(GuardCandidate {
+            exe: app.to_string_lossy().into_owned(),
+            via_bundle: true,
+            associate_bundle: true,
+        });
     }
-    std::env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
+    let cli = std::path::PathBuf::from(config::home()).join(".local/bin/eldr");
+    if cli.exists() {
+        out.push(GuardCandidate {
+            exe: cli.to_string_lossy().into_owned(),
+            via_bundle: false,
+            associate_bundle: true,
+        });
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.to_string_lossy().into_owned();
+        if !out.iter().any(|c| c.exe == exe) {
+            out.push(GuardCandidate {
+                exe,
+                via_bundle: false,
+                associate_bundle: false,
+            });
+        }
+    }
+    out
 }
 
 /// Install + start the guard LaunchAgent.
 pub fn install() -> i32 {
-    let exe = match guard_exe() {
-        Some(p) => p,
-        None => {
-            eprintln!("eldr: cannot resolve guard executable");
-            return 1;
-        }
-    };
-    let via_bundle = exe.contains("Eldr.app");
+    let candidates = guard_candidates();
+    if candidates.is_empty() {
+        eprintln!("eldr: cannot resolve guard executable");
+        return 1;
+    }
     let dir = config::ensure_data_dir();
     let log = dir.join("guard.log");
     let plist = plist_path();
     if let Some(parent) = plist.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(e) = std::fs::write(
-        &plist,
-        render_plist(&exe, 30, &dir.to_string_lossy(), &log.to_string_lossy()),
-    ) {
-        eprintln!("eldr: cannot write plist: {e}");
-        return 1;
-    }
-
     let uid = unsafe { getuid() };
     let domain = format!("gui/{uid}");
-    // Replace any prior instance.
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        stop_loaded(&domain, &plist);
+        if let Err(e) = std::fs::write(
+            &plist,
+            render_plist(
+                &candidate.exe,
+                30,
+                &dir.to_string_lossy(),
+                &log.to_string_lossy(),
+                candidate.associate_bundle,
+            ),
+        ) {
+            eprintln!("eldr: cannot write plist: {e}");
+            return 1;
+        }
+        if start_loaded(&domain, &plist) {
+            println!(
+                "eldr guard installed as LaunchAgent ({LABEL}) — starts at login, restarts on crash."
+            );
+            if candidate.via_bundle {
+                println!("  running via Eldr.app — shows the eldr icon in Login Items.");
+            } else if candidate.associate_bundle {
+                println!("  running via CLI fallback — associated with Eldr.app in Login Items.");
+            }
+            println!(
+                "  stop for real: eldr guard-uninstall   ·   log: {}",
+                log.display()
+            );
+            return 0;
+        }
+        if idx == 0 && candidate.via_bundle && candidates.len() > 1 {
+            eprintln!("eldr: launchd rejected Eldr.app guard executable; trying CLI fallback.");
+        }
+    }
+
+    eprintln!("eldr: launchd did not start {LABEL}; see {}", log.display());
+    1
+}
+
+fn stop_loaded(domain: &str, plist: &std::path::Path) {
     let _ = Command::new("launchctl")
         .args(["bootout", &format!("{domain}/{LABEL}")])
         .status();
+    let _ = Command::new("launchctl")
+        .args(["unload", &plist.to_string_lossy()])
+        .status();
     guard::stop();
-    let ok = Command::new("launchctl")
-        .args(["bootstrap", &domain, &plist.to_string_lossy()])
+}
+
+fn start_loaded(domain: &str, plist: &std::path::Path) -> bool {
+    let bootstrapped = Command::new("launchctl")
+        .args(["bootstrap", domain, &plist.to_string_lossy()])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if !ok {
-        // Fall back to the legacy load path.
-        let _ = Command::new("launchctl")
+    if !bootstrapped {
+        let loaded = Command::new("launchctl")
             .args(["load", "-w", &plist.to_string_lossy()])
-            .status();
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !loaded {
+            return false;
+        }
     }
-
-    println!("eldr guard installed as LaunchAgent ({LABEL}) — starts at login, restarts on crash.");
-    if via_bundle {
-        println!("  running via Eldr.app — shows the eldr icon in Login Items.");
-    }
-    println!(
-        "  stop for real: eldr guard-uninstall   ·   log: {}",
-        log.display()
-    );
-    0
+    thread::sleep(Duration::from_millis(500));
+    Command::new("launchctl")
+        .args(["print", &format!("{domain}/{LABEL}")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Stop + remove the guard LaunchAgent.
 pub fn uninstall() -> i32 {
     let uid = unsafe { getuid() };
     let plist = plist_path();
-    let _ = Command::new("launchctl")
-        .args(["bootout", &format!("gui/{uid}/{LABEL}")])
-        .status();
-    let _ = Command::new("launchctl")
-        .args(["unload", &plist.to_string_lossy()])
-        .status();
+    stop_loaded(&format!("gui/{uid}"), &plist);
     let _ = std::fs::remove_file(&plist);
-    guard::stop();
     println!("eldr guard LaunchAgent uninstalled");
     0
 }
