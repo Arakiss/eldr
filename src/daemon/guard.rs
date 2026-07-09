@@ -19,6 +19,7 @@ const SAMPLE_MS: u64 = 500;
 const THERMAL_NOTICE_SUSTAIN: u32 = 3;
 const THERMAL_NOTICE_COOLDOWN_SECS: u64 = 30 * 60;
 const CMUX_RESOURCE_MIN_SECS: u64 = 10;
+const CMUX_RESOURCE_RECONCILE_SECS: u64 = 10 * 60;
 const CMUX_PROBLEM_LOG_SECS: u64 = 10 * 60;
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -235,8 +236,10 @@ impl ThermalWatch {
 #[derive(Default)]
 struct CmuxResourceWatch {
     last_sync: u64,
+    last_reconcile: u64,
     last_problem_log: u64,
     last_problem: Option<String>,
+    badges: cmux::ResourceBadgeCache,
 }
 
 fn watch_cmux_resources(cmux_enabled: bool, state: &mut CmuxResourceWatch) {
@@ -248,7 +251,11 @@ fn watch_cmux_resources(cmux_enabled: bool, state: &mut CmuxResourceWatch) {
         return;
     }
     state.last_sync = now;
-    let report = cmux::sync_resource_badges();
+    let force = now.saturating_sub(state.last_reconcile) >= CMUX_RESOURCE_RECONCILE_SECS;
+    let report = cmux::sync_resource_badges(&mut state.badges, force);
+    if force && !report.is_problem() {
+        state.last_reconcile = now;
+    }
     if report.is_problem() {
         let summary = report.summary();
         let changed = state.last_problem.as_deref() != Some(summary.as_str());

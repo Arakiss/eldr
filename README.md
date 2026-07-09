@@ -233,9 +233,11 @@ notification plus a line in `alerts.log`) and re-arms when it recovers, so a bri
 stays quiet but a stuck VM or a leak gets surfaced.
 
 If cmux is available and `ELDR_CMUX=1`, the guard also refreshes a passive `resources`
-status badge on every cmux workspace tab. The badge is fed by `cmux top --all --processes
---format tsv`, not by a separate process scan, and shows aggregate CPU, RAM and process
-count for that workspace with human-readable units (`CPU 8% · RAM 273 MB · 9 proc`).
+status badge on every cmux workspace tab. The badge is fed by the aggregate workspace rows
+from `cmux top --all --format tsv`, not by a separate process scan, and shows aggregate CPU,
+RAM and process count for that workspace with human-readable units (`CPU 8% · RAM 273 MB ·
+9 proc`). Unchanged visible badges are not sent again; Eldr reasserts them periodically to
+recover after a cmux restart.
 Because temperature and fan speed are machine-level readings, Eldr only repeats a thermal
 badge across tabs when the Mac needs attention (serious/critical pressure or a fan fault);
 normal warmth belongs in `eldr tui`, not in every tab. For a 24/7 launchd guard, set cmux's

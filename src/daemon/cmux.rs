@@ -3,10 +3,12 @@
 //! guard to fan thermal badges and notifications into every cmux workspace. All calls
 //! are passive (status/notify); the guard never sends a prompt an agent would execute.
 
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
 
 const RESOURCE_KEY: &str = "resources";
 const MAX_ERR_CHARS: usize = 240;
+const WORKSPACE_USAGE_ARGS: [&str; 4] = ["top", "--all", "--format", "tsv"];
 
 /// True if the `cmux` binary is reachable.
 pub fn available() -> bool {
@@ -135,18 +137,14 @@ struct WorkspaceUsage {
 }
 
 /// Read cmux's own per-workspace resource accounting. This uses the already-aggregated
-/// `workspace` rows, so Eldr does not need to remap every process to a tab itself.
+/// `workspace` rows, so Eldr does not need to request or remap every process to a tab itself.
 fn workspace_usage() -> Result<Vec<WorkspaceUsage>, String> {
     let out = Command::new("cmux")
-        .args(["top", "--all", "--processes", "--format", "tsv"])
+        .args(WORKSPACE_USAGE_ARGS)
         .output()
         .map_err(|e| format!("spawn cmux top: {e}"))?;
     if !out.status.success() {
-        return Err(command_error(
-            "cmux",
-            &["top", "--all", "--processes", "--format", "tsv"],
-            &out,
-        ));
+        return Err(command_error("cmux", &WORKSPACE_USAGE_ARGS, &out));
     }
     Ok(parse_workspace_usage(&String::from_utf8_lossy(&out.stdout)))
 }
@@ -201,11 +199,45 @@ impl ResourceSyncReport {
     }
 }
 
-/// Set a compact CPU/RAM badge on each cmux workspace tab.
-pub fn sync_resource_badges() -> ResourceSyncReport {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResourceBadge {
+    text: String,
+    color: &'static str,
+}
+
+/// The guard owns one cache for its lifetime. It prevents cmux from redrawing a workspace
+/// badge when its visible content is unchanged; a periodic forced reconcile still restores
+/// badges after an external cmux restart.
+#[derive(Default)]
+pub struct ResourceBadgeCache {
+    entries: HashMap<String, ResourceBadge>,
+}
+
+impl ResourceBadgeCache {
+    fn should_sync(&self, workspace: &str, badge: &ResourceBadge, force: bool) -> bool {
+        force || self.entries.get(workspace) != Some(badge)
+    }
+
+    fn mark_synced(&mut self, workspace: String, badge: ResourceBadge) {
+        self.entries.insert(workspace, badge);
+    }
+
+    fn retain_live(&mut self, live: &HashSet<String>) {
+        self.entries.retain(|workspace, _| live.contains(workspace));
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Set a compact CPU/RAM badge on each cmux workspace tab. Repeated, unchanged labels are
+/// skipped, while `force` reasserts all live badges after a bounded reconciliation interval.
+pub fn sync_resource_badges(cache: &mut ResourceBadgeCache, force: bool) -> ResourceSyncReport {
     let usages = match workspace_usage() {
         Ok(usages) => usages,
         Err(err) => {
+            cache.clear();
             return ResourceSyncReport {
                 rows: 0,
                 set: 0,
@@ -218,21 +250,34 @@ pub fn sync_resource_badges() -> ResourceSyncReport {
         set: 0,
         error: None,
     };
+    let mut live = HashSet::with_capacity(usages.len());
     for usage in usages {
+        live.insert(usage.workspace.clone());
+        let badge = resource_badge(&usage);
+        if !cache.should_sync(&usage.workspace, &badge, force) {
+            continue;
+        }
         match set_status_result(
             &usage.workspace,
             RESOURCE_KEY,
-            &resource_text(&usage),
+            &badge.text,
             "speedometer",
-            resource_color(&usage),
+            badge.color,
         ) {
-            Ok(()) => report.set += 1,
+            Ok(()) => {
+                cache.mark_synced(usage.workspace, badge);
+                report.set += 1;
+            }
             Err(err) => {
                 if report.error.is_none() {
                     report.error = Some(err);
                 }
             }
         }
+    }
+    cache.retain_live(&live);
+    if report.error.is_some() {
+        cache.clear();
     }
     report
 }
@@ -260,6 +305,13 @@ fn resource_text(usage: &WorkspaceUsage) -> String {
         fmt_mem(usage.mem_bytes),
         fmt_proc_count(usage.proc_count)
     )
+}
+
+fn resource_badge(usage: &WorkspaceUsage) -> ResourceBadge {
+    ResourceBadge {
+        text: resource_text(usage),
+        color: resource_color(usage),
+    }
 }
 
 fn resource_color(usage: &WorkspaceUsage) -> &'static str {
@@ -344,11 +396,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_workspace_resource_rows_from_cmux_top() {
+    fn workspace_usage_uses_compact_cmux_top_rows() {
+        assert_eq!(WORKSPACE_USAGE_ARGS, ["top", "--all", "--format", "tsv"]);
+    }
+
+    #[test]
+    fn parses_compact_workspace_resource_rows_from_cmux_top() {
         let text = "\
 87.0\t4607160008\t80\ttotal\ttotal\t\t\n\
 2.0\t316904248\t7\tworkspace\tworkspace:7\twindow:1\tProject A\n\
 5.9\t597943536\t12\tpane\tpane:25\tworkspace:14\t\n\
+0.0\t0\t0\ttag\tworkspace:7:tag:resources\tworkspace:7\tCPU 2%\n\
+1.2\t123456\t1\tprocess\t123\tsurface:12\tchild\n\
 8.7\t285743392\t9\tworkspace\tworkspace:14\twindow:1\tProject B\n";
 
         let rows = parse_workspace_usage(text);
@@ -369,6 +428,23 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn resource_badge_cache_skips_identical_content_until_reconcile() {
+        let usage = WorkspaceUsage {
+            workspace: "workspace:7".into(),
+            cpu_pct: 8.7,
+            mem_bytes: 285_743_392,
+            proc_count: 9,
+        };
+        let badge = resource_badge(&usage);
+        let mut cache = ResourceBadgeCache::default();
+
+        assert!(cache.should_sync(&usage.workspace, &badge, false));
+        cache.mark_synced(usage.workspace.clone(), badge.clone());
+        assert!(!cache.should_sync(&usage.workspace, &badge, false));
+        assert!(cache.should_sync(&usage.workspace, &badge, true));
     }
 
     #[test]
