@@ -3,7 +3,24 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
-## [0.11.4] — unreleased
+## [0.11.6] - 2026-07-09
+
+### Added
+- **Per-workspace cmux resource badges.** The guard can show aggregate CPU, RAM, and process
+  count on each workspace before you switch to it.
+
+### Changed
+- **Badge refreshes use aggregate workspace rows and skip unchanged labels.** Eldr no longer
+  asks cmux for every child process just to update a workspace summary, and it avoids needless
+  status writes while periodically reconciling after a cmux restart.
+- **The launchd guard targets the active cmux automation socket.** Resource badges can reach
+  the live cmux server instead of silently addressing a stale socket.
+
+### Fixed
+- **Routine thermal conditions no longer spam every cmux tab.** Thermal badges are reserved for
+  serious cooling pressure or a fan fault, and passive thermal notifications are less noisy.
+
+## [0.11.4] - 2026-06-24
 
 From a correctness & robustness audit (15 findings examined, each adversarially verified;
 the 11 confirmed, all low-risk, applied here).
@@ -29,13 +46,13 @@ the 11 confirmed, all low-risk, applied here).
   `bsd_name` can't inherit a removed disk's stale verdict.
 - The footer bottom-pad loop is O(rows) instead of O(rows²).
 
-## [0.11.3] — unreleased
+## [0.11.3] - 2026-06-24
 
 ### Fixed
 - **The header (with the version) no longer scrolls off the top.** The panel emitted a
   trailing newline on the last row, which scrolled the whole frame up one line and pushed
   the `eldr vX.Y.Z` header off-screen. The final newline is now dropped so the cursor stays
-  on the bottom row — no scroll, header always visible. Regression-tested (every tab emits
+  on the bottom row; no scroll, header always visible. Regression-tested (every tab emits
   strictly fewer newlines than the terminal has rows).
 
 ## [0.11.2]
@@ -53,7 +70,7 @@ the 11 confirmed, all low-risk, applied here).
 ### Security / hardening (the deferred audit findings)
 - **Data directory is now owner-only (0700)** and the pid file 0600, so another local user
   can't read status, logs (which name processes), the pid, or scrub manifests.
-- **`running_pid()` validates identity** — it confirms the pid is actually an `eldr` process
+- **`running_pid()` validates identity**: it confirms the pid is actually an `eldr` process
   (via libproc) before treating it as the guard, so a recycled pid can't suppress a restart
   or make `guard-stop` SIGTERM an unrelated process.
 - **history.csv written atomically** (temp + rename), so the TUI never reads a torn file.
@@ -68,7 +85,7 @@ From a hardening + resource audit of the guard daemon (the long-lived process).
 - **SMART verdict read hourly, not every 30 s.** `read_smart()` shells out to `diskutil`
   per physical disk; the guard ran it on every sample (~2,880×N spawns/day). It's a
   pass/fail that flips at most once in a disk's life, so it's now read hourly with the
-  verdict carried forward in between — ~120× fewer process spawns, identical alerting and
+  verdict carried forward in between; about 120× fewer process spawns, identical alerting and
   `status.json`.
 - **Cheap t0 disk read.** `gather()` read the full disk set (recursive IOKit traversal +
   the NVMe SMART firmware plugin) twice per sample just to seed the throughput delta. The
@@ -79,7 +96,7 @@ From a hardening + resource audit of the guard daemon (the long-lived process).
 ### Security (hardening)
 - **AppleScript-injection hardening.** macOS notification text (built from process names,
   disk models, corrupt file paths) now collapses newlines/control characters so a crafted
-  name can't break out of the `osascript` string literal — in both the guard and the
+  name can't break out of the `osascript` string literal; this applies to both the guard and the
   scrubber.
 - **`status.json` temp file is per-process** (`status.json.<pid>.tmp`), so a concurrent
   writer (the guard plus a one-shot `eldr now`) can't clobber a half-written temp.
@@ -87,11 +104,11 @@ From a hardening + resource audit of the guard daemon (the long-lived process).
 ## [0.10.0]
 
 ### Added
-- **`eldr doctor`** — a one-shot self-check: version (and whether a newer one is known),
+- **`eldr doctor`**: a one-shot self-check for the version (and whether a newer one is known),
   machine, which sensor sources answer, guard running/installed + arming, data-dir size,
   config, and how/where eldr is installed (with a PATH check).
 - **New-version check + `eldr update`.** Opt-in and offline-respecting: the guard checks
-  GitHub (one cached `curl`, ~daily, `ELDR_UPDATE_CHECK=1`) and notifies — never installs.
+  GitHub (one cached `curl`, ~daily, `ELDR_UPDATE_CHECK=1`) and notifies; it never installs.
   `eldr update [--check]` reports current vs latest and, unless `--check`, upgrades via
   Homebrew (or prints the steps from source). `eldr version` shows a cached hint. No HTTP
   crate; the network call shells out to `curl`, and is silent on failure.
@@ -103,7 +120,7 @@ From a hardening + resource audit of the guard daemon (the long-lived process).
   freshly-created "subscribed channels" dictionary in its out-parameter, owned by the
   caller; it was never released. Every `Snapshot::gather` leaked a full channel
   dictionary (~100 KB), so a long-running guard reached ~280 MB and a 24/7 TUI ~8.5 GB
-  of footprint. Now released — footprint is flat over time (verified with `leaks`: was
+  of footprint. Now released, footprint is flat over time (verified with `leaks`: was
   64 440 leaks / 4 MB in 30 s, now 0). This was the monitor quietly becoming the hog.
 - **Mounted disk images no longer show as volumes.** Read-only mounts under `/Volumes`
   (an app's `.dmg`, e.g. the "Otty" terminal) were listed as storage; they're now filtered
