@@ -1,9 +1,8 @@
-//! New-version check and `eldr update`. eldr is offline by default; the automatic check
-//! (guard notification, `now`/TUI hint) only runs when `ELDR_UPDATE_CHECK=1`. The explicit
-//! `eldr update [--check]` command always reaches out. The network call shells out to
-//! `curl` (a system tool, like `osascript`/`diskutil`) — no HTTP/TLS crate, keeping the
-//! zero-dependency invariant. The result is cached so we never hit GitHub more than once a
-//! day, and every failure is silent (offline, no curl, timeout → no check, no noise).
+//! New-version check and `eldr update`. The guard checks for a newer release by default;
+//! `ELDR_UPDATE_CHECK=0` disables that network access. The explicit `eldr update [--check]`
+//! command always reaches out. The network call shells out to `curl` (a system tool, like
+//! `osascript`/`diskutil`) without adding an HTTP/TLS crate. The result is cached so we never
+//! hit GitHub more than once a day, and failures stay silent (offline, no curl, timeout).
 
 use crate::config;
 use crate::sensors::host;
@@ -12,6 +11,13 @@ use std::process::Command;
 const LATEST_URL: &str = "https://api.github.com/repos/Arakiss/eldr/releases/latest";
 const MAX_AGE_SECS: u64 = 86_400; // re-check at most once a day
 const CACHE_FILE: &str = "update_check.json";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UpdateCache {
+    ts: u64,
+    latest: String,
+    notified: Option<String>,
+}
 
 /// The version this binary was built as (`Cargo.toml`).
 pub fn current() -> &'static str {
@@ -55,11 +61,17 @@ fn cache_path() -> std::path::PathBuf {
     config::data_dir().join(CACHE_FILE)
 }
 
-fn read_cache() -> Option<(u64, String)> {
+fn read_cache() -> Option<UpdateCache> {
     let txt = std::fs::read_to_string(cache_path()).ok()?;
-    let ts = parse_tag_named(&txt, "\"ts\"")?.parse().ok()?;
-    let latest = parse_tag_named(&txt, "\"latest\"")?;
-    Some((ts, latest))
+    parse_cache(&txt)
+}
+
+fn parse_cache(text: &str) -> Option<UpdateCache> {
+    Some(UpdateCache {
+        ts: parse_tag_named(text, "\"ts\"")?.parse().ok()?,
+        latest: parse_tag_named(text, "\"latest\"")?,
+        notified: parse_tag_named(text, "\"notified\""),
+    })
 }
 
 /// Tiny extractor for our own cache file (`"ts":N,"latest":"X"`). Handles both the quoted
@@ -78,14 +90,28 @@ fn parse_tag_named(json: &str, key: &str) -> Option<String> {
     }
 }
 
-fn write_cache(ts: u64, latest: &str) {
-    let _ = config::ensure_data_dir();
-    let body = format!("{{\"ts\":{ts},\"latest\":\"{latest}\"}}");
-    let _ = std::fs::write(cache_path(), body);
+fn cache_text(cache: &UpdateCache) -> String {
+    match &cache.notified {
+        Some(notified) => format!(
+            "{{\"ts\":{},\"latest\":\"{}\",\"notified\":\"{}\"}}",
+            cache.ts, cache.latest, notified
+        ),
+        None => format!("{{\"ts\":{},\"latest\":\"{}\"}}", cache.ts, cache.latest),
+    }
+}
+
+fn write_cache(cache: &UpdateCache) {
+    let dir = config::ensure_data_dir();
+    let tmp = dir.join(format!("{CACHE_FILE}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, cache_text(cache)).is_ok() {
+        let _ = std::fs::rename(&tmp, cache_path());
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Query GitHub for the latest release tag. `None` on any failure (offline, no `curl`,
-/// timeout, parse error) — a version check must never disrupt a monitoring tool.
+/// timeout, parse error). A version check must never disrupt a monitoring tool.
 fn fetch() -> Option<String> {
     let out = Command::new("curl")
         .args([
@@ -107,29 +133,56 @@ fn fetch() -> Option<String> {
 /// The latest version tag, cached for a day. `force` bypasses the cache (for the explicit
 /// `eldr update`). `None` if the network check fails and there's no usable cache.
 pub fn latest(force: bool) -> Option<String> {
+    let cached = read_cache();
+    let now = host::unix_time();
     if !force
-        && let Some((ts, latest)) = read_cache()
-        && host::unix_time().saturating_sub(ts) < MAX_AGE_SECS
+        && let Some(cache) = &cached
+        && now.saturating_sub(cache.ts) < MAX_AGE_SECS
     {
-        return Some(latest);
+        return Some(cache.latest.clone());
     }
     let latest = fetch()?;
-    write_cache(host::unix_time(), &latest);
+    let notified = cached
+        .filter(|cache| cache.latest == latest)
+        .and_then(|cache| cache.notified);
+    write_cache(&UpdateCache {
+        ts: now,
+        latest: latest.clone(),
+        notified,
+    });
     Some(latest)
 }
 
-/// The newer version if one is available, else `None`. Hits the network (cached). For the
-/// opt-in automatic check (guard); callers must gate on `ELDR_UPDATE_CHECK`.
+/// The newer version if one is available, else `None`. Hits the network through the daily
+/// cache; callers decide whether their context permits an automatic check.
 pub fn newer_available(force: bool) -> Option<String> {
     let latest = latest(force)?;
     is_newer(&latest, current()).then_some(latest)
 }
 
-/// The newer version from the cache only — never touches the network. For passive hints
+/// The newer version from the cache only, never touching the network. For passive hints
 /// (`now`/TUI) that should stay offline; shows what a prior check already found.
 pub fn cached_newer() -> Option<String> {
-    let (_, latest) = read_cache()?;
-    is_newer(&latest, current()).then_some(latest)
+    let cache = read_cache()?;
+    is_newer(&cache.latest, current()).then_some(cache.latest)
+}
+
+/// True when the guard has already announced this exact release from its private state.
+pub(crate) fn was_notified(version: &str) -> bool {
+    read_cache().and_then(|cache| cache.notified).as_deref() == Some(version)
+}
+
+/// Record a delivered guard notification. A missing or stale cache is harmless: the next
+/// successful release check recreates it and may notify once.
+pub(crate) fn mark_notified(version: &str) {
+    let Some(mut cache) = read_cache() else {
+        return;
+    };
+    if cache.latest != version {
+        return;
+    }
+    cache.notified = Some(version.to_string());
+    write_cache(&cache);
 }
 
 /// Whether this binary lives under a Homebrew prefix (its symlink resolves into a Cellar).
@@ -185,7 +238,7 @@ mod tests {
 
     #[test]
     fn parses_github_tag() {
-        let json = r#"{"url":"...","tag_name":"v0.9.0","name":"v0.9.0 — ..."}"#;
+        let json = r#"{"url":"...","tag_name":"v0.9.0","name":"v0.9.0: ..."}"#;
         assert_eq!(parse_tag(json), Some("0.9.0".to_string()));
         // No leading v, extra whitespace tolerated.
         assert_eq!(
@@ -207,16 +260,22 @@ mod tests {
     }
 
     #[test]
-    fn reads_back_cache_format() {
-        // The shape write_cache emits must round-trip through the reader.
-        let body = r#"{"ts":1750000000,"latest":"0.9.0"}"#;
+    fn cache_format_roundtrips_and_accepts_the_previous_shape() {
+        let old = r#"{"ts":1750000000,"latest":"0.9.0"}"#;
         assert_eq!(
-            parse_tag_named(body, "\"ts\""),
-            Some("1750000000".to_string())
+            parse_cache(old),
+            Some(UpdateCache {
+                ts: 1_750_000_000,
+                latest: "0.9.0".into(),
+                notified: None,
+            })
         );
-        assert_eq!(
-            parse_tag_named(body, "\"latest\""),
-            Some("0.9.0".to_string())
-        );
+
+        let cache = UpdateCache {
+            ts: 1_750_000_100,
+            latest: "0.12.0".into(),
+            notified: Some("0.12.0".into()),
+        };
+        assert_eq!(parse_cache(&cache_text(&cache)), Some(cache));
     }
 }

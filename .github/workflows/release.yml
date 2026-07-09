@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag like v0.5.0 creates the matching GitHub Release automatically, so the
+# Pushing a tag like v0.12.0 creates the matching GitHub Release automatically, so the
 # tag and the Release never drift apart.
 on:
   push:
@@ -18,7 +18,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build app archive
+        run: |
+          make test clippy check-zero-deps verify-tag-version TAG_VERSION="${GITHUB_REF_NAME#v}" menu-test check-app APPDIR="$RUNNER_TEMP/Eldr.app"
+          make install OPEN_MENU=0 PREFIX="$RUNNER_TEMP/eldr-prefix" APPDIR="$RUNNER_TEMP/Eldr-installed.app"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/Eldr.app" "$RUNNER_TEMP/Eldr.app.zip"
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" --verify-tag --generate-notes --title "${{ github.ref_name }}"
+        run: gh release create "${{ github.ref_name }}" --verify-tag --generate-notes --title "${{ github.ref_name }}" "$RUNNER_TEMP/Eldr.app.zip#Eldr.app.zip"

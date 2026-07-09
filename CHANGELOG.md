@@ -3,6 +3,30 @@
 All notable changes to eldr. Versions before 0.8.0 are recorded in the git tags
 (`git tag`) and release notes on GitHub.
 
+## [0.12.0] - 2026-07-10
+
+### Added
+- **Native macOS menu bar app.** `Eldr.app` now installs a branded AppKit status item and
+  opens a SwiftUI diagnostic popover with health, CPU, memory and swap, temperatures and fan,
+  power and battery, storage, network activity, top CPU and memory consumers, and cached
+  release availability. It reads the guard's local files and never starts a second sensor
+  sample or network request.
+- **Diagnostic-first menu layout.** The panel identifies the current resource culprit before
+  the supporting CPU, memory, thermal, and process readings, with accessible labels and
+  scrolling detail for smaller displays.
+- **Branded menu bar icon.** The Eldr fire mark is rendered by a native status-bar button so
+  it remains visible in normal and selected menu-bar states.
+- **Guard-only menu heartbeat.** The guard now writes a small atomic `menubar.json` marker
+  alongside `status.json`, so the app can distinguish a live monitor from a one-time CLI
+  sample without probing processes.
+- **Release app archive.** GitHub Releases now attach `Eldr.app.zip` built and verified on
+  the macOS release runner.
+
+### Changed
+- **The guard now checks for released updates by default.** It consults the GitHub Releases
+  endpoint through a 24-hour cache and sends one macOS notification for each newer version.
+  Set `ELDR_UPDATE_CHECK=0` to keep a fully offline monitor.
+
 ## [0.11.6] - 2026-07-09
 
 ### Added

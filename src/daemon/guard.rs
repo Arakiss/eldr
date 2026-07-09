@@ -9,7 +9,7 @@ use crate::config;
 use crate::daemon::watchdog::Watchdog;
 use crate::daemon::{cmux, maint, notify};
 use crate::sensors::snapshot::{
-    DiskHealth, HOG_CPU_PCT, HOG_RAM_FRAC, Level, ProcInfo, Snapshot, Thermal,
+    DiskHealth, HOG_CPU_PCT, HOG_RAM_FRAC, Level, ProcInfo, Snapshot, Thermal, json_escape,
 };
 use core::ffi::c_int;
 use std::collections::{HashMap, HashSet};
@@ -78,18 +78,18 @@ pub fn run(interval_secs: u64) -> i32 {
     let mut disk_alerted: HashSet<String> = HashSet::new();
     let cfg = config::Config::load();
     let mut hogs = HogWatch::from_config(&cfg);
-    let update_check = cfg.flag("ELDR_UPDATE_CHECK", false);
+    let update_check = update_check_enabled(&cfg);
     let mut last_update: u64 = 0;
-    let mut update_notified: Option<String> = None;
     let mut last_maint: u64 = 0; // 0 ⇒ run housekeeping once at startup
     let mut warned_big = false;
     let mut last_smart: u64 = 0; // 0 ⇒ read SMART once at startup, then hourly
     let mut smart_cache: HashMap<String, String> = HashMap::new();
     let mut cmux_resources = CmuxResourceWatch::default();
+    let mut menu_sequence: u64 = 0;
     while !STOP.load(Ordering::SeqCst) {
         let mut snap = Snapshot::gather(SAMPLE_MS);
         snap.source = "guard".into();
-        // The firmware SMART verdict shells out to `diskutil` per disk — far too heavy for
+        // The firmware SMART verdict shells out to `diskutil` per disk, far too heavy for
         // every 30s sample, and it's a pass/fail that flips at most once in a disk's life.
         // Read it hourly and carry the verdict forward on the samples in between, so
         // status.json and the disk watcher see a stable value without the per-sample spawn.
@@ -119,7 +119,10 @@ pub fn run(interval_secs: u64) -> i32 {
                 }
             }
         }
-        let _ = snap.write_status();
+        if snap.write_status().is_ok() {
+            menu_sequence = menu_sequence.saturating_add(1);
+            write_menubar_heartbeat(&snap, interval_secs, menu_sequence);
+        }
         push_history(&mut history, &snap);
 
         handle_transitions(&snap, &mut thermal_watch, wd.cmux);
@@ -128,7 +131,7 @@ pub fn run(interval_secs: u64) -> i32 {
         watch_cmux_resources(wd.cmux, &mut cmux_resources);
         run_maintenance(&mut last_maint, &mut warned_big);
         if update_check {
-            watch_for_update(&mut last_update, &mut update_notified);
+            watch_for_update(&mut last_update);
         }
 
         // Sustained-critical gating for armed interventions.
@@ -159,14 +162,47 @@ pub fn run(interval_secs: u64) -> i32 {
     // On shutdown, resume anything we paused (don't leave a process suspended).
     wd.unintervene();
 
-    // Clean shutdown: clear badges, remove pid file.
+    // Clean shutdown: clear badges, remove the guard markers.
     if wd.cmux {
         cmux::clear_all();
         cmux::clear_resources_all();
     }
     let _ = std::fs::remove_file(&pidfile);
+    let _ = std::fs::remove_file(config::menubar_path());
     eprintln!("eldr guard: stopped");
     0
+}
+
+/// Atomically refresh the guard-only marker consumed by the native menu bar. The full
+/// metrics remain in status.json; this file is intentionally tiny and answers only whether
+/// the guard itself is still making progress. One-shot CLI commands never write it.
+fn write_menubar_heartbeat(snapshot: &Snapshot, interval_secs: u64, sequence: u64) {
+    let pid = unsafe { getpid() };
+    let body = menubar_heartbeat_json(
+        pid,
+        crate::sensors::host::unix_time(),
+        interval_secs.max(1),
+        sequence,
+        &snapshot.ts,
+    );
+    let dir = config::ensure_data_dir();
+    let tmp = dir.join(format!("menubar.json.{pid}.tmp"));
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, config::menubar_path());
+    }
+}
+
+fn menubar_heartbeat_json(
+    pid: i32,
+    heartbeat_at: u64,
+    interval_secs: u64,
+    sequence: u64,
+    status_sample_ts: &str,
+) -> String {
+    format!(
+        "{{\"schema_version\":\"1\",\"kind\":\"eldr.menubar\",\"pid\":{pid},\"heartbeat_at\":{heartbeat_at},\"interval_seconds\":{interval_secs},\"status_sample_ts\":\"{}\",\"sequence\":{sequence}}}",
+        json_escape(status_sample_ts),
+    )
 }
 
 /// React to thermal level changes. Fair thermal pressure is useful status, not a push
@@ -363,7 +399,7 @@ fn append(path: &std::path::Path, text: &str) {
 }
 
 /// PID of a live guard, if any (reads the pid file and probes the process). Beyond a
-/// `kill(pid, 0)` existence probe, confirm the process is actually an `eldr` — a bare PID
+/// `kill(pid, 0)` existence probe, confirm the process is actually an `eldr`. A bare PID
 /// can be recycled to an unrelated process, and trusting it would either suppress a
 /// restart or let `guard-stop` SIGTERM a stranger.
 pub fn running_pid() -> Option<i32> {
@@ -390,7 +426,7 @@ pub fn stop() -> bool {
 
 /// The danger signal for sustained-critical counting (used by the M5 watchdog): macOS
 /// thermal pressure at its peak, or a genuinely failed fan. A fan stopped at idle is
-/// normal on Apple Silicon and must NOT arm interventions — see [`Snapshot::fan_failed`].
+/// normal on Apple Silicon and must NOT arm interventions. See [`Snapshot::fan_failed`].
 pub fn is_critical(s: &Snapshot) -> bool {
     s.thermal == Thermal::Critical || s.fan_failed()
 }
@@ -398,7 +434,7 @@ pub fn is_critical(s: &Snapshot) -> bool {
 /// Watch each physical disk for the earliest degradation signals: a firmware SMART
 /// "failing" verdict, or I/O error/retry counters that grow between samples. Notifies
 /// once per disk per episode and clears the latch once the disk reads healthy again, so
-/// a later resurgence re-alerts. This NEVER intervenes — a degrading disk calls for a
+/// a later resurgence re-alerts. This NEVER intervenes. A degrading disk calls for a
 /// human (back up, replace), not an automated action the watchdog could take.
 fn watch_disk_health(
     s: &Snapshot,
@@ -426,12 +462,12 @@ fn watch_disk_health(
             let (title, body) = if failing {
                 (
                     format!("eldr · disk {} SMART failing", h.bsd_name),
-                    format!("{label}: firmware predicts failure — back up now."),
+                    format!("{label}: firmware predicts failure. Back up now."),
                 )
             } else if let Some(reason) = nvme {
                 (
                     format!("eldr · disk {} {reason}", h.bsd_name),
-                    format!("{label}: {reason} — back up and check the disk."),
+                    format!("{label}: {reason}. Back up and check the disk."),
                 )
             } else {
                 (
@@ -451,10 +487,10 @@ fn watch_disk_health(
 }
 
 /// How many consecutive samples a hog must persist before alerting. At the default 30s
-/// cadence that's ~1 minute sustained — enough to skip a brief spike (a compile, a page
+/// cadence that's ~1 minute sustained, enough to skip a brief spike (a compile, a page
 /// load) and catch a genuine runaway like a stuck VM or a leaking process.
 const HOG_SUSTAIN: u32 = 2;
-/// Ignore swap below this — a little parked swap is normal and not worth a notification.
+/// Ignore swap below this. A little parked swap is normal and not worth a notification.
 const SWAP_FLOOR: u64 = 1 << 30; // 1 GiB
 
 /// A resource-hog notification ready to fire: a macOS notification (`title`/`body`) plus
@@ -468,7 +504,7 @@ struct HogAlert {
 /// Sustained-hog detector with per-process hysteresis, mirroring the disk watcher: it
 /// fires once when a process (or memory itself) crosses a threshold for `HOG_SUSTAIN`
 /// samples, and clears the latch when it recovers so a later resurgence re-alerts. Like
-/// everything in the guard, it only NOTIFIES — never kills, suspends, or shuts down.
+/// everything in the guard, it only NOTIFIES. It never kills, suspends, or shuts down.
 /// Thresholds default to the shared `HOG_*` constants and can be tuned in config.toml
 /// (`ELDR_HOG_CPU` percent, `ELDR_HOG_RAM` fraction of total RAM).
 struct HogWatch {
@@ -514,7 +550,7 @@ impl HogWatch {
         let mut out = Vec::new();
         let (cpu_pct, ram_frac) = (self.cpu_pct, self.ram_frac);
 
-        // CPU hogs — any top process sustaining ≥ the CPU threshold across cores.
+        // CPU hogs: any top process sustaining ≥ the CPU threshold across cores.
         let cpu_now: HashSet<i32> = s
             .top_procs
             .iter()
@@ -531,7 +567,7 @@ impl HogWatch {
             }
         }
 
-        // RAM hogs — any top process holding ≥ the RAM-fraction threshold.
+        // RAM hogs: any top process holding ≥ the RAM-fraction threshold.
         let total = s.ram_total.max(1);
         let is_ram_hog = |p: &ProcInfo| (p.mem as f64 / total as f64) >= ram_frac;
         let ram_now: HashSet<i32> = s
@@ -550,7 +586,7 @@ impl HogWatch {
             }
         }
 
-        // Memory strain — pressure at "high", or swap actively growing while pressure is
+        // Memory strain: pressure at "high", or swap actively growing while pressure is
         // already "medium". The plain-language pressure signal, not a raw "% used".
         let press = s.mem_pressure();
         let swap_grew =
@@ -566,7 +602,7 @@ impl HogWatch {
         } else {
             self.mem_streak = 0;
             if press == "low" {
-                self.mem_alerted = false; // recovered — re-arm
+                self.mem_alerted = false; // recovered, re-arm
             }
         }
 
@@ -580,7 +616,7 @@ impl HogAlert {
         HogAlert {
             title: format!("eldr · {name} using {:.0}% CPU", p.cpu),
             body: format!(
-                "{name} (pid {}) has held {:.0}% CPU — it's likely slowing the Mac.",
+                "{name} (pid {}) has held {:.0}% CPU. It is likely slowing the Mac.",
                 p.pid, p.cpu,
             ),
             log: format!(
@@ -609,7 +645,7 @@ impl HogAlert {
         let avail = s.ram_available as f64 / 1_073_741_824.0;
         let swap = s.swap_used as f64 / 1_073_741_824.0;
         let tail = if swap_grew {
-            format!(" — swap climbing, now {swap:.1} GB")
+            format!(", swap climbing, now {swap:.1} GB")
         } else {
             String::new()
         };
@@ -638,7 +674,7 @@ fn proc_label(name: &str) -> String {
 }
 
 /// Watch for a process (or memory itself) hogging the machine and notify, passively, once
-/// per episode. Pairs with the disk and thermal watchers — the same notify-only posture.
+/// per episode. Pairs with the disk and thermal watchers, with the same notify-only posture.
 fn watch_resource_hogs(s: &Snapshot, hogs: &mut HogWatch) {
     for a in hogs.check(s) {
         log_alert_line(&a.log);
@@ -650,19 +686,18 @@ fn log_alert_line(line: &str) {
     append(&config::alerts_path(), line);
 }
 
-/// Opt-in (`ELDR_UPDATE_CHECK=1`) passive new-version notice: check at most every 6 hours
-/// (the underlying fetch is itself cached to once a day), and notify once per new version.
-/// Never installs anything — that's the user's `eldr update`.
-fn watch_for_update(last: &mut u64, notified: &mut Option<String>) {
+/// The guard checks for a release by default. `ELDR_UPDATE_CHECK=0` disables it. It calls the
+/// daily cached lookup at most every six hours and records the announced version locally, so a
+/// guard restart does not repeat the same notification. It never installs anything.
+fn watch_for_update(last: &mut u64) {
     let now = crate::sensors::host::unix_time();
     if now.saturating_sub(*last) < 21_600 {
         return;
     }
     *last = now;
     if let Some(v) = crate::update::newer_available(false)
-        && notified.as_deref() != Some(v.as_str())
+        && !crate::update::was_notified(&v)
     {
-        *notified = Some(v.clone());
         append(
             &config::alerts_path(),
             &format!(
@@ -672,13 +707,18 @@ fn watch_for_update(last: &mut u64, notified: &mut Option<String>) {
         );
         notify::send(
             "eldr · update available",
-            &format!("v{v} is out — run `eldr update`"),
+            &format!("v{v} is out. Run `eldr update`."),
         );
+        crate::update::mark_notified(&v);
     }
 }
 
-/// Daily housekeeping: cap the append-only logs so they can't grow without bound, and —
-/// once per guard run — warn if the data dir has grown past the configured threshold
+fn update_check_enabled(cfg: &config::Config) -> bool {
+    cfg.flag("ELDR_UPDATE_CHECK", true)
+}
+
+/// Daily housekeeping: cap the append-only logs so they can't grow without bound, and,
+/// once per guard run, warn if the data dir has grown past the configured threshold
 /// (usually a manifest over a huge, many-file volume). Runs at startup, then every 24h.
 fn run_maintenance(last_maint: &mut u64, warned_big: &mut bool) {
     let now = crate::sensors::host::unix_time();
@@ -700,7 +740,7 @@ fn run_maintenance(last_maint: &mut u64, warned_big: &mut bool) {
             );
             notify::send(
                 "eldr · data dir large",
-                &format!("{human} under ~/.local/share/eldr — consider: eldr prune"),
+                &format!("{human} under ~/.local/share/eldr. Consider: eldr prune"),
             );
         }
         Some(_) => {}                // already warned this run
@@ -709,7 +749,7 @@ fn run_maintenance(last_maint: &mut u64, warned_big: &mut bool) {
 }
 
 /// True when either error or retry counter rose since the previous sample. A first
-/// sighting (no previous reading) never counts as growth — cumulative counters are only
+/// sighting (no previous reading) never counts as growth. Cumulative counters are only
 /// meaningful as a delta.
 fn counters_grew(prev: Option<(u64, u64)>, cur: (u64, u64)) -> bool {
     prev.map(|(e, r)| cur.0 > e || cur.1 > r).unwrap_or(false)
@@ -758,7 +798,7 @@ fn push_history(hist: &mut Vec<(f64, u32, f32)>, s: &Snapshot) {
         .map(|(c, r, p)| format!("{c:.1},{r},{p:.1}\n"))
         .collect();
     // Write atomically (temp + rename in the same dir) so the TUI never reads a torn file
-    // mid-rewrite — the rename swaps in the whole new file at once.
+    // mid-rewrite. The rename swaps in the whole new file at once.
     let dir = config::data_dir();
     let tmp = dir.join("history.csv.tmp");
     if std::fs::write(&tmp, &body).is_ok() {
@@ -782,6 +822,41 @@ mod tests {
         assert!(counters_grew(Some((5, 2)), (5, 3)));
         // Counters can't fall on real hardware, but a reset must not false-alarm.
         assert!(!counters_grew(Some((9, 9)), (0, 0)));
+    }
+
+    #[test]
+    fn update_check_is_enabled_by_default_and_can_be_disabled() {
+        assert!(update_check_enabled(&config::Config::parse("")));
+        assert!(update_check_enabled(&config::Config::parse(
+            "ELDR_UPDATE_CHECK=1"
+        )));
+        assert!(!update_check_enabled(&config::Config::parse(
+            "ELDR_UPDATE_CHECK=0"
+        )));
+    }
+
+    #[test]
+    fn menubar_heartbeat_keeps_the_guard_contract_small_and_parseable() {
+        let json = menubar_heartbeat_json(42, 1_760_000_000, 30, 7, "2026-07-09T21:18:37Z");
+        let parsed = crate::json::Json::parse(&json).expect("valid heartbeat JSON");
+        assert_eq!(
+            parsed.get("kind").and_then(crate::json::Json::as_str),
+            Some("eldr.menubar")
+        );
+        assert_eq!(
+            parsed.get("pid").and_then(crate::json::Json::as_i64),
+            Some(42)
+        );
+        assert_eq!(
+            parsed
+                .get("interval_seconds")
+                .and_then(crate::json::Json::as_i64),
+            Some(30)
+        );
+        assert_eq!(
+            parsed.get("sequence").and_then(crate::json::Json::as_i64),
+            Some(7)
+        );
     }
 
     fn cpu_proc(pid: i32, cpu: f32) -> ProcInfo {
@@ -831,11 +906,11 @@ mod tests {
         let mut s = Snapshot::default();
         s.ram_total = 48 << 30;
         s.ram_available = 40 << 30; // low pressure, so only the RAM signal is in play
-        // 4 GB on 48 GB is under 15% — never fires.
+        // 4 GB on 48 GB is under 15%, so it never fires.
         s.top_mem = vec![mem_proc(3, 4 << 30)];
         assert!(w.check(&s).is_empty());
         assert!(w.check(&s).is_empty());
-        // 12 GB (25%) sustained — fires once.
+        // 12 GB (25%) sustained, so it fires once.
         s.top_mem = vec![mem_proc(3, 12 << 30)];
         assert!(w.check(&s).is_empty());
         let a = w.check(&s);

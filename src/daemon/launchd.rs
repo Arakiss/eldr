@@ -94,14 +94,14 @@ struct GuardCandidate {
     associate_bundle: bool,
 }
 
-/// The executable launchd should run. Prefer the app-bundle binary so the guard is
-/// attributed to `Eldr.app`; fall back to the installed CLI if macOS rejects the bundle
-/// executable after a local rebuild.
+/// The executable launchd should run. Prefer the app-bundle binary only when it matches
+/// this CLI's version; otherwise a Homebrew or CLI update could silently relaunch an old
+/// bundled guard. Fall back to the installed CLI if launchd rejects the current bundle.
 fn guard_candidates() -> Vec<GuardCandidate> {
     let mut out = Vec::new();
     let app =
         std::path::PathBuf::from(config::home()).join("Applications/Eldr.app/Contents/MacOS/eldr");
-    if app.exists() {
+    if app.exists() && bundle_is_current(&app) {
         out.push(GuardCandidate {
             exe: app.to_string_lossy().into_owned(),
             via_bundle: true,
@@ -129,8 +129,39 @@ fn guard_candidates() -> Vec<GuardCandidate> {
     out
 }
 
+fn bundle_is_current(executable: &std::path::Path) -> bool {
+    bundle_version_matches(
+        bundle_version(executable).as_deref(),
+        crate::update::current(),
+    )
+}
+
+fn bundle_version_matches(version: Option<&str>, current: &str) -> bool {
+    version == Some(current)
+}
+
+fn bundle_version(executable: &std::path::Path) -> Option<String> {
+    let plist = executable.parent()?.parent()?.join("Info.plist");
+    let text = std::fs::read_to_string(plist).ok()?;
+    plist_string(&text, "CFBundleShortVersionString")
+}
+
+fn plist_string(text: &str, key: &str) -> Option<String> {
+    let after_key = &text[text.find(&format!("<key>{key}</key>"))? + key.len() + 11..];
+    let after_open = &after_key[after_key.find("<string>")? + 8..];
+    let end = after_open.find("</string>")?;
+    Some(after_open[..end].trim().to_string())
+}
+
 /// Install + start the guard LaunchAgent.
 pub fn install() -> i32 {
+    let app =
+        std::path::PathBuf::from(config::home()).join("Applications/Eldr.app/Contents/MacOS/eldr");
+    if app.exists() && !bundle_is_current(&app) {
+        eprintln!(
+            "eldr: Eldr.app differs from this CLI version; guard-install will use the updated CLI. Run `make install` to refresh the bundle."
+        );
+    }
     let candidates = guard_candidates();
     if candidates.is_empty() {
         eprintln!("eldr: cannot resolve guard executable");
@@ -164,12 +195,12 @@ pub fn install() -> i32 {
         }
         if start_loaded(&domain, &plist) {
             println!(
-                "eldr guard installed as LaunchAgent ({LABEL}) — starts at login, restarts on crash."
+                "eldr guard installed as LaunchAgent ({LABEL}). Starts at login, restarts on crash."
             );
             if candidate.via_bundle {
-                println!("  running via Eldr.app — shows the eldr icon in Login Items.");
+                println!("  running via Eldr.app. Shows the eldr icon in Login Items.");
             } else if candidate.associate_bundle {
-                println!("  running via CLI fallback — associated with Eldr.app in Login Items.");
+                println!("  running via CLI fallback. Associated with Eldr.app in Login Items.");
             }
             println!(
                 "  stop for real: eldr guard-uninstall   ·   log: {}",
@@ -234,7 +265,7 @@ pub fn uninstall() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::render_plist;
+    use super::{bundle_version_matches, plist_string, render_plist};
 
     #[test]
     fn launch_agent_pins_cmux_socket_path() {
@@ -247,5 +278,17 @@ mod tests {
             "/tmp/cmux.sock",
         );
         assert!(plist.contains("<key>CMUX_SOCKET_PATH</key><string>/tmp/cmux.sock</string>"));
+    }
+
+    #[test]
+    fn bundle_version_must_match_before_the_guard_prefers_it() {
+        let plist = "<key>CFBundleShortVersionString</key><string>0.12.0</string>";
+        assert_eq!(
+            plist_string(plist, "CFBundleShortVersionString").as_deref(),
+            Some("0.12.0")
+        );
+        assert!(bundle_version_matches(Some("0.12.0"), "0.12.0"));
+        assert!(!bundle_version_matches(Some("0.11.6"), "0.12.0"));
+        assert!(!bundle_version_matches(None, "0.12.0"));
     }
 }

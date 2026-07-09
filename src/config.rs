@@ -3,6 +3,9 @@
 //! Fully wired in M4/M5; M0 provides the loader skeleton.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+static CONFIGURED_DATA_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
 
 /// Flat config: `key = value`, `#` comments, blank lines ignored. We accept both
 /// `KEY=value` and `key = "value"` forms so the bash `watchdog.conf` ports cleanly.
@@ -92,11 +95,23 @@ pub fn home() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
 }
 
-/// Data directory: `$ELDR_DIR` or `~/.local/share/eldr`. Holds status.json,
-/// alerts.log, actions.log, processes.log.
+/// Data directory: `$ELDR_DIR` from the environment or config, then
+/// `~/.local/share/eldr`. Holds status.json, menubar.json, alerts.log, actions.log and
+/// processes.log.
 pub fn data_dir() -> std::path::PathBuf {
-    if let Ok(x) = std::env::var("ELDR_DIR") {
+    if let Ok(x) = std::env::var("ELDR_DIR")
+        && !x.is_empty()
+    {
         return std::path::PathBuf::from(x);
+    }
+    let configured = CONFIGURED_DATA_DIR.get_or_init(|| {
+        Config::load()
+            .get("ELDR_DIR")
+            .filter(|x| !x.is_empty())
+            .map(std::path::PathBuf::from)
+    });
+    if let Some(path) = configured {
+        return path.clone();
     }
     std::path::PathBuf::from(home())
         .join(".local")
@@ -106,7 +121,7 @@ pub fn data_dir() -> std::path::PathBuf {
 
 /// Ensure the data directory exists; returns its path. The directory is owner-only
 /// (0700) so its contents (status.json, logs naming processes, the pid file, scrub
-/// manifests) aren't readable by other local users — least privilege for a daemon.
+/// manifests) are not readable by other local users. This is least privilege for a daemon.
 pub fn ensure_data_dir() -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let dir = data_dir();
@@ -117,6 +132,11 @@ pub fn ensure_data_dir() -> std::path::PathBuf {
 
 pub fn status_path() -> std::path::PathBuf {
     data_dir().join("status.json")
+}
+/// Guard-only heartbeat for the native menu bar. Unlike status.json, one-shot CLI
+/// commands never write this file, so consumers can tell that the guard is alive.
+pub fn menubar_path() -> std::path::PathBuf {
+    data_dir().join("menubar.json")
 }
 /// Rolling telemetry series (cpu_load, fan_rpm, sys_power) the guard appends to, so the
 /// TUI can open with its sparklines already populated.

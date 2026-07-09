@@ -1,6 +1,6 @@
-//! `eldr doctor` — a one-shot health check of eldr itself: which sensor sources answer,
+//! `eldr doctor`: a one-shot health check of eldr itself: which sensor sources answer,
 //! whether the guard is installed and running, where data lives, how it's configured, and
-//! whether a newer version is known (from cache only — no network unless `eldr update`
+//! whether a newer version is known (from cache only; no network unless `eldr update`
 //! has run). Local and fast; meant to be the first thing to run when something looks off.
 
 use crate::config;
@@ -23,7 +23,7 @@ pub fn run() -> i32 {
     println!("  {b}Version{z}");
     match update::cached_newer() {
         Some(latest) => println!(
-            "    {warn} eldr {}  {d}— {latest} available · run `eldr update`{z}",
+            "    {warn} eldr {}  {d}· {latest} available · run `eldr update`{z}",
             update::current()
         ),
         None => println!("    {ok} eldr {}", update::current()),
@@ -48,38 +48,38 @@ pub fn run() -> i32 {
     let snap = Snapshot::gather(400);
     println!("\n  {b}Sensors{z}");
     println!(
-        "    {} IOReport power/freq {d}— pkg {:.1} W · CPU {} MHz{z}",
+        "    {} IOReport power/freq {d}· pkg {:.1} W · CPU {} MHz{z}",
         mark(snap.all_power > 0.0),
         snap.all_power,
         snap.pcpu_freq_mhz,
     );
     println!(
-        "    {} temperatures {d}— CPU {:.0}° · GPU {:.0}°{z}",
+        "    {} temperatures {d}· CPU {:.0}° · GPU {:.0}°{z}",
         mark(snap.cpu_temp > 0.0),
         snap.cpu_temp,
         snap.gpu_temp,
     );
     println!(
-        "    {} fan {d}— {} reported{z}",
+        "    {} fan {d}· {} reported{z}",
         mark(snap.fan_max > 0),
         snap.fans.len(),
     );
     println!(
-        "    {} thermal pressure {d}— {}{z}",
+        "    {} thermal pressure {d}· {}{z}",
         mark(snap.thermal != crate::sensors::snapshot::Thermal::Unknown),
         snap.thermal.as_str(),
     );
     println!(
-        "    {ok} per-core load {d}— {} cores{z}",
+        "    {ok} per-core load {d}· {} cores{z}",
         snap.per_core.len()
     );
     println!(
-        "    {ok} disks {d}— {} physical · {} volumes{z}",
+        "    {ok} disks {d}· {} physical · {} volumes{z}",
         snap.disk_health.len(),
         snap.volumes.len(),
     );
     println!(
-        "    {} network {d}— {}{z}",
+        "    {} network {d}· {}{z}",
         mark(snap.net.is_some()),
         snap.net
             .as_ref()
@@ -87,7 +87,7 @@ pub fn run() -> i32 {
             .unwrap_or("unavailable"),
     );
     println!(
-        "    {} battery {d}— {}{z}",
+        "    {} battery {d}· {}{z}",
         if snap.battery.is_some() { &ok } else { &warn },
         snap.battery
             .as_ref()
@@ -99,12 +99,12 @@ pub fn run() -> i32 {
     println!("\n  {b}Guard{z}");
     match crate::daemon::guard::running_pid() {
         Some(pid) => println!("    {ok} running {d}(pid {pid}){z}"),
-        None => println!("    {warn} not running {d}— `eldr guard` or `eldr guard-install`{z}"),
+        None => println!("    {warn} not running {d}· `eldr guard` or `eldr guard-install`{z}"),
     }
     if launchd::installed() {
         println!("    {ok} LaunchAgent installed {d}(starts at login){z}");
     } else {
-        println!("    {warn} LaunchAgent not installed {d}— `eldr guard-install` for 24/7{z}");
+        println!("    {warn} LaunchAgent not installed {d}· `eldr guard-install` for 24/7{z}");
     }
     let wd = Watchdog::load();
     println!(
@@ -121,17 +121,17 @@ pub fn run() -> i32 {
     println!("\n  {b}Files{z}");
     let dir = config::data_dir();
     println!(
-        "    {ok} data dir {d}— {} ({}){z}",
+        "    {ok} data dir {d}· {} ({}){z}",
         dir.display(),
         human_bytes(crate::daemon::maint::dir_size(&dir)),
     );
     let conf = config::default_path();
     if conf.exists() {
-        println!("    {ok} config {d}— {}{z}", conf.display());
+        println!("    {ok} config {d}· {}{z}", conf.display());
     } else {
-        println!("    {warn} config {d}— none ({}){z}", conf.display());
+        println!("    {warn} config {d}· none ({}){z}", conf.display());
     }
-    let check_on = config::Config::load().flag("ELDR_UPDATE_CHECK", false);
+    let check_on = config::Config::load().flag("ELDR_UPDATE_CHECK", true);
     println!(
         "    {d}update check: {} (ELDR_UPDATE_CHECK){z}",
         if check_on { "on" } else { "off" },

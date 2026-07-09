@@ -27,13 +27,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (strict)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Build (release)
         run: cargo build --release --locked
 
       - name: Test
-        run: cargo test --all
+        run: cargo test --locked --all
 
       - name: Zero-crate invariant
         run: |
@@ -43,3 +43,9 @@ jobs:
             echo "::error::Expected exactly 1 package (eldr); the zero-crate invariant is broken."
             exit 1
           fi
+
+      - name: Native menu bar app
+        run: make verify-version menu-test check-app APPDIR="$RUNNER_TEMP/Eldr.app"
+
+      - name: Installer smoke test
+        run: make install OPEN_MENU=0 PREFIX="$RUNNER_TEMP/eldr-prefix" APPDIR="$RUNNER_TEMP/Eldr-installed.app"

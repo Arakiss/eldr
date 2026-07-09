@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="eldr — a zero-crate hardware monitor and protective watchdog for Apple Silicon" width="100%" />
+  <img src="assets/banner.svg" alt="eldr: a zero-crate hardware monitor and protective watchdog for Apple Silicon" width="100%" />
 </p>
 
 <p align="center">
@@ -14,22 +14,22 @@
 
 # eldr
 
-> _eldr_ — Old Norse for **fire**.
+> _eldr_: Old Norse for **fire**.
 
 **A global hardware monitor and protective watchdog for Apple Silicon Macs.** No sudo,
-no external crates — every OS interface is hand-written FFI over the system frameworks.
+no external crates. Every OS interface is hand-written FFI over the system frameworks.
 It reads CPU/GPU/ANE power, per-core load, temperatures and fans the same no-sudo way
-Apple's own tools do, and — when armed — takes **reversible** action on a sustained
+Apple's own tools do, and, when armed, takes **reversible** action on a sustained
 thermal anomaly.
 
 <p align="center">
-  <img src="assets/eldr-tui-wide.svg" alt="eldr's dashboard-wall Overview on a wide terminal — four tall braille area charts for CPU, GPU, power and network filling the height, a band of compact panels (memory, heat, cores, top processes) below, and a red callout flagging a resource hog" width="100%" />
+  <img src="assets/eldr-tui-wide.svg" alt="eldr's dashboard-wall Overview on a wide terminal: four tall braille area charts for CPU, GPU, power and network filling the height, a band of compact panels (memory, heat, cores, top processes) below, and a red callout flagging a resource hog" width="100%" />
 </p>
 
-<p align="center"><sub><code>eldr tui</code> — the Overview as a dashboard wall: on a wide screen the charts grow to fill the whole panel (height and width), tuned for an ultra-wide always-on monitor; it degrades to compact single-row lanes on a laptop. Below it cycles through seven tabbed views:</sub></p>
+<p align="center"><sub><code>eldr tui</code>: the Overview as a dashboard wall. On a wide screen the charts grow to fill the whole panel (height and width), tuned for an ultra-wide always-on monitor; it degrades to compact single-row lanes on a laptop. Below it cycles through seven tabbed views:</sub></p>
 
 <p align="center">
-  <img src="assets/eldr-demo.gif" alt="eldr's live TUI cycling through its tabs — Overview, CPU, Cooling, Memory, Energy, Battery — with colour-coded bars" width="100%" />
+  <img src="assets/eldr-demo.gif" alt="eldr's live TUI cycling through its tabs: Overview, CPU, Cooling, Memory, Energy and Battery, with colour-coded bars" width="100%" />
 </p>
 
 <p align="center"><sub>And <code>eldr now</code>, the one-shot snapshot:</sub></p>
@@ -45,8 +45,8 @@ thermal anomaly.
   Top   com.apple.Virtualization 6%  cmux 1%  eldr 1%
 ```
 
-> **Status:** early but real (`v0.10.0`). Every reading above is cross-checked against an
-> independent reference monitor on an M4 Pro — frequency tables are byte-exact, live
+> **Status:** early but real (`v0.12.0`). Every reading above is cross-checked against an
+> independent reference monitor on an M4 Pro. Frequency tables are byte-exact, live
 > power/temps near-identical. It is a personal tool first; treat it as beta, and keep the
 > watchdog's reversible actions disabled until you trust them on your own machine.
 
@@ -56,11 +56,11 @@ Tools like `stats` and iStat Menus are excellent at *showing* you what your Mac 
 eldr's two differences:
 
 - **It can act, not only watch.** When armed, the guard takes _reversible_ protective
-  action on a sustained thermal anomaly — pause a runaway agent, `SIGSTOP` the top CPU hog
+  action on a sustained thermal anomaly: pause a runaway agent, `SIGSTOP` the top CPU hog
   (auto-resumed), `git stash create` a dirty repo. It never kills, never shuts down, never
   closes a session. A monitor that doubles as a safety net.
 - **It tells you what's slowing the Mac.** The guard passively notifies on a sustained
-  resource hog — a process pinning the CPU (≥ 300%, ~3 cores), one holding a large share of
+  resource hog: a process pinning the CPU (≥ 300%, ~3 cores), one holding a large share of
   RAM (≥ 15%), or memory under sustained pressure with swap climbing. The always-on TUI
   flags the same offender in red on the Overview, so a glance tells you what to quit.
 - **It annotates your cmux tabs.** When `ELDR_CMUX=1`, the guard writes a compact
@@ -71,12 +71,31 @@ eldr's two differences:
   If the guard runs from launchd, cmux must allow local automation
   (`automation.socketControlMode = "automation"`); the default `cmuxOnly` mode only trusts
   processes launched from inside cmux tabs.
-- **Zero crates, by policy.** The whole binary is `std` plus FFI eldr writes itself —
+- **It has a native menu bar.** `Eldr.app` installs the Eldr fire mark as a real macOS
+  status item. Click it for a focused monitor that puts the current resource culprit first,
+  then CPU, memory, thermal state, cooling, storage, network activity, and the top CPU and
+  memory consumers. It reads the guard's last sample and never takes another hardware sample
+  or makes a network request.
+- **Zero crates, by policy.** The whole binary is `std` plus FFI eldr writes itself:
   nothing under `[dependencies]`, one package in `Cargo.lock`. Small surface, fast builds,
   no supply chain to trust. CI re-checks the invariant on every push.
 
 And it's built for agents as much as people: `eldr check` exits `0`/`1`/`2` for OK/WARN/ALERT,
 and `status.json` is a stable contract for tooling.
+
+### Native macOS menu bar
+
+The menu app is deliberately a consumer of Eldr's persisted guard data. Its native AppKit
+status item keeps the Eldr icon visible in the menu bar; the SwiftUI popover is a compact
+diagnostic view rather than a second monitor process. It highlights the process applying the
+most pressure before the rest of the readings, and remains useful when the guard is delayed
+or a one-time snapshot is the only available data.
+
+<p align="center">
+  <img src="assets/eldr-status-item.png" alt="The Eldr fire mark visible in the macOS menu bar" width="180" />
+  <br />
+  <img src="assets/eldr-menubar.png" alt="Eldr's native macOS monitor highlights cmux as the top CPU consumer, then shows CPU, free memory, thermal state, and the leading live processes" width="502" />
+</p>
 
 ## Why zero crates
 
@@ -97,9 +116,9 @@ eldr writes itself (FFI provenance and acknowledgements in [NOTICE](NOTICE)):
   processes.
 - **IOKit block storage** for every mounted volume and per-disk I/O error/retry/latency
   counters, plus **NVMe SMART** (temperature, wear, bytes written, spare) through the
-  `IONVMeSMARTInterface` plug-in — for the internal SSD and external Thunderbolt-NVMe
+  `IONVMeSMARTInterface` plug-in, for the internal SSD and external Thunderbolt-NVMe
   disks alike.
-- **NSProcessInfo** thermal state via the bare Objective-C runtime — the clean throttle
+- **NSProcessInfo** thermal state via the bare Objective-C runtime, the clean throttle
   signal the watchdog gates on.
 
 The IOReport/IOHID/SMC FFI is hand-written from Apple's framework interfaces: eldr
@@ -115,7 +134,11 @@ brew install Arakiss/tap/eldr
 ```
 
 Builds from source (needs the Rust toolchain). Installs just the `eldr` CLI; for the guard
-daemon's `Eldr.app` bundle, use `make install` below.
+daemon's `Eldr.app` bundle, download `Eldr.app.zip` from a GitHub Release or use `make install`
+below. The archive is ad-hoc signed and checked in CI, but it is not Developer ID notarized.
+Gatekeeper rejects it by default on Apple Silicon, so the first launch requires the user's
+explicit approval in Finder or System Settings. A seamless Homebrew cask awaits Developer ID
+signing and notarization; the formula intentionally remains CLI-only.
 
 ### From source
 
@@ -125,19 +148,22 @@ make install          # builds release, installs the CLI to ~/.local/bin, and bu
 
 Requires a recent Rust toolchain (edition 2024, rustc 1.85+) and an Apple Silicon Mac.
 `make install` also assembles `~/Applications/Eldr.app`, the bundle the guard daemon runs
-from — so it appears with the eldr icon under *System Settings → Login Items*.
+from, so it appears with the Eldr icon under *System Settings → Login Items*. It opens the
+menu app after installation by default. Click the Eldr fire mark in the macOS menu bar to
+open the monitor (`OPEN_MENU=0 make install` skips that launch). The Rust `eldr` executable
+remains inside the bundle for the guard and CLI.
 
 ## Commands
 
 ```
 eldr now                     one-shot snapshot
-eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT) — for agents
+eldr check                   terse line + exit 0/1/2 (OK/WARN/ALERT), for agents
 eldr status                  panel (live, or the last guard sample)
-eldr tui [--interval N]      responsive live dashboard — Overview/CPU/Cooling/Memory/Energy/Battery/Storage
+eldr tui [--interval N]      responsive live dashboard: Overview/CPU/Cooling/Memory/Energy/Battery/Storage
                              (a dashboard wall that fills the whole screen; ←→/Tab/1-7 switch, space pause, +/- speed, ? help)
-eldr watch [--interval N]    stream one line per sample (--json = NDJSON) — for agents
+eldr watch [--interval N]    stream one line per sample (--json = NDJSON), for agents
 eldr system                  machine identity: model, serial, macOS, CPU, RAM, SSD
-eldr sensors                 every SMC sensor — temps, fans, power, current, voltage
+eldr sensors                 every SMC sensor: temps, fans, power, current, voltage
 eldr disk                    per-volume usage + per-disk health (SMART, I/O errors, NVMe wear, bus)
 
 eldr scrub init <path>       fingerprint a tree (SHA-256) into a manifest
@@ -147,7 +173,7 @@ eldr prune                   cap the append-only logs; report freed + data-dir s
 eldr doctor                  self-check: sensors, guard, config, install, version
 eldr update [--check]        check for a newer release; update via Homebrew (or instruct)
 
-eldr suspend <pid>           SIGSTOP a process (refuses protected ones) — reversible
+eldr suspend <pid>           SIGSTOP a process (refuses protected ones), reversible
 eldr resume <pid>            SIGCONT a suspended process
 eldr checkpoint <path>       non-destructive git stash-create snapshot of a dirty repo
 
@@ -165,11 +191,13 @@ eldr compare <a> <b>         iso-load delta + verdict  (--tail N)
 ```
 
 Any read command takes `--json` for machine-readable stdout. Agents can also read
-`~/.local/share/eldr/status.json` (override the directory with `ELDR_DIR`). `eldr check`
+`~/.local/share/eldr/status.json` (override the directory with `ELDR_DIR`). The native
+menu bar additionally reads the guard-only `menubar.json` heartbeat to distinguish a live
+guard from a one-time command. `eldr check`
 exits `0`/`1`/`2` for OK/WARN/ALERT; `eldr disk` exits `2`/`1`/`0`.
 
 Everything eldr writes stays in `~/.local/share/eldr` (never on the disks it watches). The
-append-only logs are capped to their most recent lines — automatically by the running
+append-only logs are capped to their most recent lines, automatically by the running
 guard (daily) and on demand with `eldr prune`. The guard also warns if the data dir grows
 past `ELDR_DATA_WARN_MB` (default 500), which usually means a scrub manifest over a volume
 with very many files.
@@ -178,7 +206,7 @@ with very many files.
 
 eldr is meant to be driven by a harness (Claude Code, Codex) as much as by a person:
 
-- **`--json` on every read command** — `eldr disk --json`, `eldr check --json`, … emit a
+- **`--json` on every read command.** `eldr disk --json`, `eldr check --json`, and similar commands emit a
   flat JSON object on stdout with a `schema_version`, so an agent parses directly instead
   of scraping panels.
 - **`eldr watch --json`** streams NDJSON, one snapshot per line, to follow the machine
@@ -186,7 +214,7 @@ eldr is meant to be driven by a harness (Claude Code, Codex) as much as by a per
 - **`eldr mcp`** is a Model Context Protocol server over stdio (JSON-RPC 2.0, hand-rolled,
   zero crates). Point an MCP-capable client at it and eldr shows up as native tools:
   `get_status`, `get_disk_health`, `get_system`, `get_sensors`.
-- **Reversible actions** — `eldr suspend`/`resume` (SIGSTOP/SIGCONT, with the watchdog's
+- **Reversible actions.** `eldr suspend`/`resume` (SIGSTOP/SIGCONT, with the watchdog's
   protected-process denylist) and `eldr checkpoint` (a non-destructive `git stash create`)
   let an agent act with the same safety guarantees the watchdog holds itself to. Nothing
   here kills, shuts down, or closes.
@@ -205,7 +233,8 @@ eldr guard-uninstall    # stops and removes it
 ```
 
 `guard-install` registers a per-user LaunchAgent with `RunAtLoad` + `KeepAlive`: it
-starts at login, restarts on crash, and refreshes `status.json` every 30s. It runs from
+starts at login, restarts on crash, and refreshes `status.json` plus the guard-only
+`menubar.json` heartbeat every 30s. It runs from
 `Eldr.app` when present, so the guard shows the eldr icon in Login Items. Nothing needs
 `sudo`, and the agent runs entirely inside your own user session.
 
@@ -225,7 +254,7 @@ sustained thermal anomaly. The safety model is the point:
 - `ELDR_DRYRUN=1` logs intended actions and performs nothing; `eldr watchdog-test`
   previews targeting at any time.
 
-Separately — always on, no arming needed — the guard also **notifies** (never intervenes)
+Separately, always on and with no arming needed, the guard also **notifies** (never intervenes)
 on a degrading disk (see below) and on a sustained **resource hog**: a process pinning the
 CPU (≥ 300%, ~3 cores), one holding a large share of RAM (≥ 15% of physical memory), or
 memory under sustained pressure with swap climbing. Each fires once per episode (a macOS
@@ -259,21 +288,21 @@ ELDR_DRYRUN=0        # 1 = log only, perform nothing
 ELDR_HOG_CPU=300     # resource-hog alert: % CPU (across cores) a process must sustain
 ELDR_HOG_RAM=0.15    # resource-hog alert: fraction of physical RAM a process must hold
 
-ELDR_UPDATE_CHECK=0  # 1 = let the guard check GitHub for a newer release (~daily) and
-                     # notify; off by default so eldr stays fully offline unless asked
+ELDR_UPDATE_CHECK=0  # disable the default daily release check and keep the guard offline
 ```
 
-eldr is offline by default. The only network it ever makes is the new-version check, and
-only when you opt in (`ELDR_UPDATE_CHECK=1`) or run `eldr update` explicitly — a single
-cached `curl` to the GitHub releases API, never a crate. `eldr update` upgrades via
-Homebrew when installed that way, otherwise it prints the steps; it never auto-installs.
+The guard checks for a new release by default. It uses one cached `curl` to the GitHub
+Releases API per day and sends one macOS notification for each newer version. Set
+`ELDR_UPDATE_CHECK=0` to keep the monitor fully offline. The menu bar never makes a network
+request; it only shows a newer version already present in that cache. `eldr update` upgrades
+via Homebrew when installed that way, otherwise it prints the steps; it never auto-installs.
 
 The TUI also takes `ELDR_COLS`/`ELDR_ROWS` to pin the panel size when a terminal or
 multiplexer misreports it (it auto-detects via the terminal otherwise).
 
 ## Storage health & integrity
 
-`eldr disk` shows every mounted volume and the health of each physical disk — the
+`eldr disk` shows every mounted volume and the health of each physical disk: the
 firmware SMART verdict, I/O error/retry counts, and NVMe wear telemetry where the disk
 exposes it (internal SSD and external Thunderbolt-NVMe alike):
 
@@ -289,14 +318,14 @@ It reports the bus (PCI-Express / USB / SATA / Apple Fabric) and, for NVMe disks
 firmware's on-die temperature sensors. Live read/write throughput (bytes/s over the
 sample window) shows on the TUI Storage tab and in `status.json` (`read_rate`/`write_rate`
 per disk). On an external SSD those extra sensors track the
-controller/NAND heat that drives the *enclosure's* fan — the fan's own RPM isn't exposed
+controller/NAND heat that drives the *enclosure's* fan. The fan's own RPM isn't exposed
 to the host over USB/Thunderbolt, so this is the closest honest signal for it.
 
 When the guard is running it watches this passively: it **notifies** (never intervenes on
 a disk) when SMART flips to failing, I/O errors start rising, or the firmware raises an
 NVMe critical warning. `eldr disk` exits `2` on a failing disk, `1` on I/O errors.
 
-The **scrubber** catches what SMART can't — silent corruption (bit rot), a flipped bit on
+The **scrubber** catches what SMART cannot: silent corruption (bit rot), a flipped bit on
 disk that nothing reports. APFS checksums its own metadata, not your file data, so the
 only honest detector is to hash the bytes and compare:
 
@@ -308,7 +337,7 @@ eldr scrub verify /Volumes/Vault      # re-hash; report bit rot, edits, new and 
 The tell of true corruption versus a normal edit: the content changed while size **and**
 modification time stayed identical. `verify` exits `2` and keeps flagging a corrupt file
 until it's restored. For a scheduled scrub, `eldr scrub verify <path> --notify` raises a
-notification and logs to `alerts.log` on corruption (run it from launchd/cron — it stays
+notification and logs to `alerts.log` on corruption (run it from launchd/cron; it stays
 out of the guard's sampling loop, where hashing gigabytes would stall telemetry).
 
 ## Bench discipline
@@ -325,16 +354,16 @@ eldr compare bare case
 
 ## The name
 
-`eldr` is Old Norse for **fire** — the root of Swedish _eld_, Norwegian/Danish _ild_ and
+`eldr` is Old Norse for **fire**, the root of Swedish _eld_, Norwegian/Danish _ild_ and
 Icelandic _eldur_. A small tool that watches the heat, named for the heat. The flame in
 the logo is the whole brand; its runic cousin is _Kenaz_ (ᚲ), the torch.
 
 ## proto/
 
-`proto/` keeps the original `fanwatch` bash tool that eldr grew from — the proven
+`proto/` keeps the original `fanwatch` bash tool that eldr grew from, the proven
 watchdog safety model, the SMC keys, the cmux recipe and the `thermalstate.swift` helper.
 It is the prototype and the spec, not part of the build.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright © 2026 Petru Arakiss.
+MIT. See [LICENSE](LICENSE). Copyright © 2026 Petru Arakiss.
