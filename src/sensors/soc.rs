@@ -125,7 +125,9 @@ fn dvfs_freqs(dict: CFDictionaryRef, key: &str, scale: u32) -> Option<Vec<u32>> 
     }
     let scale = scale.max(1);
     let freqs: Vec<u32> = bytes
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) / scale)
         .collect();
     Some(freqs)
