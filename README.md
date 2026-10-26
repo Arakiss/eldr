@@ -1,3 +1,6 @@
+> **Archived on 2026-10-26.**
+> eldr was a hardware monitor and protective thermal watchdog for Apple Silicon Macs. It is no longer used and was dropped in October 2026.
+
 <p align="center">
   <img src="assets/banner.svg" alt="eldr: a zero-crate hardware monitor and protective watchdog for Apple Silicon" width="100%" />
 </p>
