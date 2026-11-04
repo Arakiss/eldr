@@ -2,7 +2,7 @@
 //! reader. No `ratatui`/`crossterm`. A [`RawMode`] guard restores the terminal on
 //! drop (cursor, alternate screen, cooked mode), so quitting never leaks raw mode.
 
-use core::ffi::c_int;
+use core::ffi::{c_int, c_void};
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -55,9 +55,10 @@ unsafe extern "C" {
     fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, termios: *const Termios) -> c_int;
     fn poll(fds: *mut Pollfd, nfds: u32, timeout: c_int) -> c_int;
-    fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
+    fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn ioctl(fd: c_int, request: u64, arg: *mut Winsize) -> c_int;
-    fn open(path: *const core::ffi::c_char, flags: c_int) -> c_int;
+    // open(2) is variadic (the optional mode); the declaration must say so.
+    fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
     fn close(fd: c_int) -> c_int;
     fn signal(signum: c_int, handler: extern "C" fn(c_int)) -> usize;
 }
@@ -134,7 +135,7 @@ pub fn read_key(timeout_ms: i32) -> Option<u8> {
         return None;
     }
     let mut byte = 0u8;
-    let n = unsafe { read(0, &mut byte, 1) };
+    let n = unsafe { read(0, (&raw mut byte).cast(), 1) };
     if n == 1 { Some(byte) } else { None }
 }
 
@@ -225,7 +226,7 @@ fn size_via_cursor() -> Option<(u16, u16)> {
             break;
         }
         let mut byte = 0u8;
-        if unsafe { read(0, &mut byte, 1) } != 1 {
+        if unsafe { read(0, (&raw mut byte).cast(), 1) } != 1 {
             break;
         }
         buf.push(byte);
